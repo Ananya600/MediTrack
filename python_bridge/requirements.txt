@@ -1,4 +1,2 @@
-fastapi
-uvicorn
 google-genai
-requests
+websockets
