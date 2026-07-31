@@ -22,6 +22,7 @@ def home():
     """Health check endpoint for UptimeRobot to ping."""
     return {"status": "ok", "message": "Gemini ESP32 Bridge is running!"}
 
+@app.post("/")
 @app.post("/generate")
 def generate_text(data: TextPrompt):
     """Generates a text response from Gemini 2.0 Flash."""
@@ -35,6 +36,7 @@ def generate_text(data: TextPrompt):
         )
         return {"response": response.text}
     except Exception as e:
+        print(f"Error processing text prompt: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
