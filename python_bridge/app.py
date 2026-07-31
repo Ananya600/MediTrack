@@ -4,51 +4,48 @@ import websockets
 from google import genai
 from google.genai import types
 
-# Fetch port assigned by Render and Gemini API key from environment
-PORT = int(os.environ.get("PORT", 10000))
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
+PORT = int(os.environ.get("PORT", 10000))
 
 if not GEMINI_API_KEY:
-    raise ValueError("CRITICAL: GEMINI_API_KEY environment variable is not set!")
+    raise ValueError("GEMINI_API_KEY environment variable is not set!")
 
-# Initialize Google Gen AI client
-client = genai.Client(api_key=GEMINI_API_KEY)
+client = genai.Client(
+    api_key=GEMINI_API_KEY, 
+    http_options={'api_version': 'v1alpha'}
+)
 
-# Gemini Live API model ID
-MODEL_ID = "gemini-2.0-flash"
+MODEL = "gemini-2.0-flash"
 
-
-async def handle_request(path, request_headers):
+async def process_request(connection, request):
     """
-    HTTP request handler for Render / UptimeRobot health checks.
-    Returns 200 OK for standard HTTP GET pings so Render doesn't sleep.
+    Intercepts HTTP requests (like Render/UptimeRobot health checks)
+    before the WebSocket handshake takes place.
     """
-    if request_headers.get("Upgrade", "").lower() != "websocket":
-        return (
-            200,
-            [("Content-Type", "text/plain")],
-            b"OK - Gemini Live Bridge Active\n",
+    # 1. Handle HTTP HEAD or non-WebSocket requests cleanly with 200 OK
+    if request.headers.get("Upgrade", "").lower() != "websocket":
+        # Return a 200 OK HTTP response for pings/health-checks
+        return connection.respond(
+            200, 
+            [("Content-Type", "text/plain")], 
+            b"OK - Gemini Live Bridge Active\n"
         )
-    return None  # Hand off connection to the WebSocket handler
-
+    
+    # 2. Returning None lets websockets proceed with the WSS handshake
+    return None
 
 async def handle_esp32(websocket):
-    print("\n[Render Bridge] ESP32 Connected via WebSocket!")
-
-    # Configure session to request text responses back from Live API
+    print("\n[Render] ESP32 Connected via WebSocket!")
+    
     config = types.LiveConnectConfig(
         response_modalities=[types.LiveClientContentModality.TEXT]
     )
 
     try:
-        # Establish Live API session with Google
-        async with client.aio.live.connect(
-            model=MODEL_ID, config=config
-        ) as session:
-            print("[Render Bridge] Connected to Gemini Live API session.")
+        async with client.aio.live.connect(model=MODEL, config=config) as session:
+            print("[Render] Gemini Live API Session active!")
 
             async def receive_from_gemini():
-                """Receive response stream from Gemini and forward text to ESP32."""
                 try:
                     async for response in session.receive():
                         server_content = response.server_content
@@ -56,52 +53,43 @@ async def handle_esp32(websocket):
                             for part in server_content.model_turn.parts:
                                 if part.text:
                                     print(part.text, end="", flush=True)
-                                    # Forward Gemini text back to ESP32 over WebSocket
                                     await websocket.send(part.text)
                 except asyncio.CancelledError:
                     pass
                 except Exception as e:
-                    print(f"\n[Gemini Receive Error]: {e}")
+                    print(f"\n[Gemini Error]: {e}")
 
-            async def send_to_gemini():
-                """Listen for incoming text messages from ESP32 and forward to Gemini."""
+            async def send_mic_to_gemini():
                 try:
                     async for message in websocket:
-                        if isinstance(message, str):
-                            print(f"\n[ESP32 Prompt]: {message}")
-                            # Send text prompt over the active Live API session
-                            await session.send(input=message, end_of_turn=True)
-                        elif isinstance(message, bytes):
-                            # Reserved for future PCM audio streaming
+                        if isinstance(message, bytes):
                             await session.send(
-                                input={
-                                    "data": message,
-                                    "mime_type": "audio/pcm",
-                                },
-                                end_of_turn=False,
+                                input={"data": message, "mime_type": "audio/pcm"}, 
+                                end_of_turn=False
                             )
+                        elif isinstance(message, str):
+                            await session.send(input=message, end_of_turn=True)
                 except asyncio.CancelledError:
                     pass
                 except Exception as e:
-                    print(f"\n[ESP32 Send Error]: {e}")
+                    print(f"\n[ESP32 Error]: {e}")
 
-            # Run receive and send tasks concurrently
-            await asyncio.gather(receive_from_gemini(), send_to_gemini())
+            await asyncio.gather(receive_from_gemini(), send_mic_to_gemini())
 
     except websockets.exceptions.ConnectionClosed:
-        print("[Render Bridge] ESP32 Connection closed.")
+        print("[Render] ESP32 connection closed.")
     except Exception as e:
-        print(f"[Render Bridge Error]: {e}")
-
+        print(f"[Render Error]: {e}")
 
 async def main():
-    # Bind server to 0.0.0.0 and port assigned by Render
     async with websockets.serve(
-        handle_esp32, "0.0.0.0", PORT, process_request=handle_request
+        handle_esp32, 
+        "0.0.0.0", 
+        PORT, 
+        process_request=process_request
     ):
-        print(f"Gemini Live Bridge running on port {PORT}...")
+        print(f"Gemini Live API Bridge running on port {PORT}...")
         await asyncio.Future()
-
 
 if __name__ == "__main__":
     asyncio.run(main())
