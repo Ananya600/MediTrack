@@ -21,6 +21,7 @@
     --mint:#8FCDAF;
     --mint-dim:#DFF3E9;
     --peach:#F0AE7E;
+    --peach-dim:#FBEAD9;
     --pink:#EE93A6;
     --pink-dim:#FBE4E9;
     --blue:#9EC0E8;
@@ -115,6 +116,7 @@
     color:#fff; border:none; font-weight:700; font-size:14.5px; border-radius:12px;
   }
   .btn-primary:hover{opacity:0.92;}
+  .btn-primary:disabled{opacity:0.5; cursor:not-allowed;}
   .login-error{
     display:none; background:var(--pink-dim); color:#B5596B; font-size:13px;
     padding:10px 12px; border-radius:10px; margin-bottom:16px;
@@ -154,6 +156,7 @@
     padding:1px 7px; border-radius:10px; font-weight:700;
   }
   .nav-item.active .count{color:#7A5FA8; background:#fff;}
+  .nav-item .count.alert{color:#B5596B; background:var(--pink-dim);}
 
   .sidebar-foot{ padding:16px 22px; border-top:1px solid var(--line); display:flex; align-items:center; gap:10px; }
   .avatar{
@@ -177,8 +180,27 @@
   .search-box input{background:none; border:none; color:var(--text); font-size:13px; width:100%;}
   .search-box input::placeholder{color:var(--text-faint);}
 
+  /* ---------- reminder banner ---------- */
+  .alert-banner{
+    display:none; align-items:center; justify-content:space-between; gap:16px;
+    padding:12px 32px; background:var(--pink-dim); color:#B5596B; font-size:13px; font-weight:600;
+  }
+  .alert-banner.show{display:flex;}
+  .alert-banner .a-left{display:flex; align-items:center; gap:10px;}
+  .alert-banner .a-dot{width:8px; height:8px; border-radius:50%; background:#D9647C; flex-shrink:0;}
+  .alert-banner button{background:none; border:none; color:#B5596B; font-size:16px; opacity:0.7;}
+  .alert-banner button:hover{opacity:1;}
+  .alert-banner .a-link{text-decoration:underline; background:none; border:none; color:#B5596B; font-size:13px; font-weight:700;}
+
   .page{padding:28px 32px 40px; display:none;}
   .page.active{display:block;}
+
+  .page-head{display:flex; align-items:center; justify-content:space-between; margin-bottom:18px;}
+  .btn-add{
+    padding:10px 18px; background:linear-gradient(135deg, var(--lavender), var(--pink));
+    color:#fff; border:none; font-weight:700; font-size:13px; border-radius:12px;
+  }
+  .btn-add:hover{opacity:0.92;}
 
   .stat-row{display:grid; grid-template-columns:repeat(4,1fr); gap:16px; margin-bottom:28px;}
   .stat-card{ background:var(--panel); border:1px solid var(--line); border-radius:var(--radius); padding:18px 20px; }
@@ -198,8 +220,10 @@
   tr:hover td{background:var(--panel-2);}
   .badge{ display:inline-block; padding:4px 10px; border-radius:10px; font-size:11px; font-weight:700; }
   .badge.ok{background:var(--mint-dim); color:#2E8760;}
-  .badge.low{background:#FBEAD9; color:#B5732C;}
+  .badge.low{background:var(--peach-dim); color:#B5732C;}
+  .badge.due{background:var(--peach-dim); color:#B5732C;}
   .badge.out{background:var(--pink-dim); color:#B5596B;}
+  .badge.upcoming{background:var(--panel-3); color:var(--text-faint);}
 
   .form-grid{display:grid; grid-template-columns:1fr 1fr; gap:18px; max-width:640px;}
   .form-grid .full{grid-column:1/-1;}
@@ -209,11 +233,39 @@
     color:var(--text); border-radius:12px; font-size:14px; font-family:inherit;
   }
   .form-grid input:focus, select:focus{outline:none; border-color:var(--lavender);}
-  .btn-row{display:flex; gap:10px; margin-top:8px;}
+  .field-hint{font-size:11.5px; color:var(--text-faint); margin-top:5px;}
+  .field-error{font-size:11.5px; color:#C9576D; margin-top:5px; display:none;}
+  .field-error.show{display:block;}
+  input.invalid{border-color:var(--pink);}
+
+  .btn-row{display:flex; gap:10px; margin-top:8px; align-items:center;}
   .btn-secondary{ padding:11px 20px; background:var(--panel-2); border:2px solid var(--line); color:var(--text-dim); border-radius:12px; font-size:13px; font-weight:700; }
   .btn-secondary:hover{color:var(--text);}
+  .btn-danger{ padding:11px 20px; background:var(--pink-dim); border:2px solid transparent; color:#B5596B; border-radius:12px; font-size:13px; font-weight:700; margin-left:auto; }
+  .btn-danger:hover{background:#F6C7D0;}
   .save-msg{ display:none; margin-top:14px; padding:10px 14px; background:var(--mint-dim); color:#2E8760; font-size:13px; border-radius:10px; font-weight:600; }
   .save-msg.show{display:block;}
+
+  .schedule-editor{border:2px dashed var(--line); border-radius:12px; padding:14px; margin-top:4px;}
+  .schedule-row{display:grid; grid-template-columns:1fr 1fr auto; gap:10px; align-items:center; margin-bottom:10px;}
+  .schedule-row:last-child{margin-bottom:0;}
+  .btn-remove-time{ background:var(--pink-dim); color:#B5596B; border:none; border-radius:10px; width:38px; height:38px; font-size:15px; font-weight:700; }
+  .btn-remove-time:hover{background:#F6C7D0;}
+  .btn-add-time{ margin-top:4px; background:none; border:1.5px dashed var(--text-faint); color:var(--text-dim); border-radius:10px; padding:9px 14px; font-size:12.5px; font-weight:700; width:100%; }
+  .btn-add-time:hover{border-color:var(--lavender); color:#7A5FA8;}
+
+  .days-row{display:flex; flex-wrap:wrap; gap:6px; margin-top:2px; margin-bottom:14px;}
+  .day-chip{
+    padding:6px 10px; background:var(--panel); border:2px solid var(--line); color:var(--text-dim);
+    border-radius:9px; font-size:11.5px; font-weight:700;
+  }
+  .day-chip:hover{border-color:var(--lavender);}
+  .day-chip.active{background:var(--lavender-dim); border-color:var(--lavender); color:#7A5FA8;}
+  .day-chip.daily-chip{margin-right:4px;}
+
+  tr.row-flash td{animation:rowFlash 1.6s ease-out;}
+  @keyframes rowFlash{ 0%{background:var(--pink-dim);} 100%{background:transparent;} }
+  @media (prefers-reduced-motion: reduce){ tr.row-flash td{animation:none;} }
 
   .report-grid{display:grid; grid-template-columns:1.3fr 1fr; gap:20px; margin-top:20px;}
   .bar-row{display:flex; align-items:center; gap:12px; padding:10px 20px;}
@@ -222,10 +274,11 @@
   .bar-fill{height:100%; background:linear-gradient(90deg, var(--lavender), var(--pink)); border-radius:5px;}
   .bar-row .num{width:40px; text-align:right; font-size:12px; color:var(--text-faint); font-weight:700;}
 
-  .movement-item{padding:12px 20px; border-bottom:1px solid var(--line); font-size:12.5px; display:flex; justify-content:space-between; color:var(--text-dim);}
+  .movement-item{padding:12px 20px; border-bottom:1px solid var(--line); font-size:12.5px; display:flex; justify-content:space-between; color:var(--text-dim); gap:10px;}
   .movement-item:last-child{border-bottom:none;}
   .movement-item .m-item{color:var(--text); font-weight:600;}
-  .movement-item .m-time{color:var(--text-faint); font-size:11px;}
+  .movement-item .m-by{color:var(--text-faint);}
+  .movement-item .m-time{color:var(--text-faint); font-size:11px; white-space:nowrap;}
 
   .restock-card{display:flex; align-items:center; gap:16px; padding:16px 20px; border-bottom:1px solid var(--line);}
   .restock-card:last-child{border-bottom:none;}
@@ -238,7 +291,9 @@
   }
   .btn-restock{ padding:9px 16px; background:var(--mint); color:#1F4A38; border:none; font-weight:700; font-size:12.5px; border-radius:10px; }
   .btn-restock:hover{background:#7FC29F;}
-  .empty-note{padding:32px 20px; text-align:center; color:var(--text-faint); font-size:13px;}
+  .btn-restock:disabled{background:var(--panel-3); color:var(--text-faint); cursor:not-allowed;}
+  .empty-note{padding:44px 20px; text-align:center; color:var(--text-faint); font-size:13px;}
+  .empty-note .btn-add{margin-top:14px;}
 
   .ticker-wrap{ border-top:1px solid var(--line); background:var(--panel); overflow:hidden; white-space:nowrap; padding:9px 0; }
   .ticker-track{display:inline-block; animation:ticker 30s linear infinite;}
@@ -255,6 +310,7 @@
     .stat-row{grid-template-columns:1fr 1fr;}
     .report-grid{grid-template-columns:1fr;}
     .form-grid{grid-template-columns:1fr;}
+    .schedule-row{grid-template-columns:1fr 1fr; grid-template-areas:"time dose" "remove remove";}
   }
 </style>
 </head>
@@ -271,16 +327,16 @@
       <p>Track medicine intake, edit schedules, review adherence reports, and stay ahead of refills — all from one dashboard.</p>
     </div>
     <div class="brand-foot">
-      <div><b>4</b>medicines tracked</div>
-      <div><b>96%</b>adherence rate</div>
-      <div><b>2</b>refills due</div>
+      <div><b id="brandMedCount">4</b>medicines tracked</div>
+      <div><b id="brandAdherence">96%</b>adherence rate</div>
+      <div><b id="brandRestock">2</b>refills due</div>
     </div>
   </div>
 
   <div class="login-panel">
     <div class="login-box">
       <h2>Sign in to MediTracker</h2>
-      <p class="sub">Enter your credentials to reach the dashboard.</p>
+      <p class="sub">Enter your caregiver credentials to reach the dashboard.</p>
       <div class="login-error" id="loginError">Enter both a username and password to continue.</div>
       <form id="loginForm">
         <div class="field">
@@ -297,7 +353,7 @@
         </div>
         <button type="submit" class="btn-primary">Sign in</button>
       </form>
-      <div class="hint-box"><b>Demo mode:</b> this is a self-contained front end with no backend.<br>Enter any username and password to sign in.</div>
+      <div class="hint-box"><b>Demo mode:</b> this is a self-contained front end with no backend yet.<br>Enter any username and password — that username is stamped on the actions you take, and multiple caregivers can sign in with different names to share the same schedule.</div>
     </div>
   </div>
 </div>
@@ -310,8 +366,8 @@
       <div class="nav-label">Dashboard</div>
       <button class="nav-item active" data-page="overview"><span class="ic">◎</span> Overview</button>
       <div class="nav-label" style="margin-top:18px;">Medication</div>
-      <button class="nav-item" data-page="track"><span class="ic">⏱</span> Track <span class="count" id="navTrackCount">0</span></button>
-      <button class="nav-item" data-page="edit"><span class="ic">✎</span> Edit</button>
+      <button class="nav-item" data-page="track"><span class="ic">⏱️</span> Track <span class="count" id="navTrackCount">0</span></button>
+      <button class="nav-item" data-page="edit"><span class="ic">✎</span> Manage</button>
       <button class="nav-item" data-page="report"><span class="ic">▤</span> Report</button>
       <button class="nav-item" data-page="restock"><span class="ic">↻</span> Restock <span class="count" id="navRestockCount">0</span></button>
     </nav>
@@ -334,13 +390,21 @@
       </div>
     </div>
 
+    <div class="alert-banner" id="reminderBanner">
+      <div class="a-left"><span class="a-dot"></span><span id="reminderText"></span></div>
+      <div style="display:flex; align-items:center; gap:14px;">
+        <button class="a-link" id="reminderGoto">View doses</button>
+        <button id="reminderDismiss" title="Dismiss">✕</button>
+      </div>
+    </div>
+
     <!-- OVERVIEW -->
     <section class="page active" id="page-overview">
       <div class="stat-row">
         <div class="stat-card"><div class="lbl">Medicines</div><div class="val" id="statTotal">0</div></div>
         <div class="stat-card"><div class="lbl">Taken Today</div><div class="val good" id="statTaken">0</div></div>
-        <div class="stat-card"><div class="lbl">Pending</div><div class="val warn" id="statPending">0</div></div>
-        <div class="stat-card"><div class="lbl">Missed</div><div class="val bad" id="statMissed">0</div></div>
+        <div class="stat-card"><div class="lbl">Pending / Due</div><div class="val warn" id="statPending">0</div></div>
+        <div class="stat-card"><div class="lbl">Missed Today</div><div class="val bad" id="statMissed">0</div></div>
       </div>
       <div class="report-grid">
         <div class="panel">
@@ -359,7 +423,7 @@
       <div class="panel">
         <div class="panel-head">
           <h3>Today's medication schedule</h3>
-          <span style="font-size:12px; color:var(--text-faint); font-weight:700;" id="trackCountLabel">0 medicines</span>
+          <span style="font-size:12px; color:var(--text-faint); font-weight:700;" id="trackCountLabel">0 doses</span>
         </div>
         <table>
           <thead><tr><th>Medicine</th><th>Dosage</th><th>Time</th><th>Compartment</th><th>Status</th><th></th></tr></thead>
@@ -368,23 +432,45 @@
       </div>
     </section>
 
-    <!-- EDIT -->
+    <!-- MANAGE (add / edit / delete) -->
     <section class="page" id="page-edit">
+      <div class="page-head">
+        <span style="font-size:13px; color:var(--text-faint); font-weight:600;">Add a new medicine, or select one below to edit its schedule.</span>
+        <button class="btn-add" id="newMedBtn">+ Add medicine</button>
+      </div>
       <div class="panel" style="padding:24px;">
         <div class="form-grid">
-          <div class="full">
-            <label>Select medicine</label>
+          <div class="full" id="editSelectWrap">
+            <label>Select medicine to edit</label>
             <select id="editSelect"></select>
           </div>
-          <div><label>Dosage</label><input type="text" id="editDosage"></div>
-          <div><label>Time</label><input type="time" id="editTime"></div>
-          <div><label>Compartment</label><input type="text" id="editCompartment"></div>
-          <div><label>Refill threshold (pills)</label><input type="number" id="editThreshold"></div>
+
+          <div class="full"><label>Medicine name</label><input type="text" id="editName" placeholder="e.g. Metformin"></div>
+          <div><label>Compartment</label><input type="text" id="editCompartment" placeholder="e.g. A1"></div>
+          <div><label>Refill threshold (pills)</label><input type="number" id="editThreshold" min="0"></div>
+
+          <div><label>Total pills per refill</label><input type="number" id="editPillsFull" min="1"></div>
+          <div>
+            <label>Pills currently in compartment</label>
+            <input type="number" id="editPillsLeft" min="0">
+            <div class="field-hint">Use this after a physical recount — it won't be logged as a refill.</div>
+          </div>
+
+          <div class="full">
+            <label>Scheduled doses</label>
+            <div class="field-hint" style="margin-top:-4px; margin-bottom:10px;">Set a time and dosage for each dose, then choose Daily or specific days — like setting an alarm.</div>
+            <div class="schedule-editor" id="scheduleEditor"></div>
+            <button type="button" class="btn-add-time" id="addTimeBtn">+ Add another time</button>
+          </div>
+
+          <div class="full field-error" id="formError"></div>
+
           <div class="full btn-row">
             <button class="btn-primary" style="width:auto; padding:12px 24px;" id="saveEditBtn">Save changes</button>
             <button class="btn-secondary" id="resetEditBtn" type="button">Reset</button>
+            <button class="btn-danger" id="deleteMedBtn" type="button">Delete medicine</button>
           </div>
-          <div class="full save-msg" id="editSaveMsg">Changes saved to the medicine record.</div>
+          <div class="full save-msg" id="editSaveMsg"></div>
         </div>
       </div>
     </section>
@@ -428,28 +514,97 @@
     field.appendChild(d);
   }
 
-  // ---------- demo medicine data ----------
+  // ---------- state ----------
+  var currentUser = '';
+  var reminderDismissed = false;
+  var GRACE_MINUTES = 60; // how long after a scheduled time a dose stays "due" before flipping to "missed"
+  var nextScheduleUid = 100;
+  var nextMedId = 100;
+
+  // schedule.days: 'daily', or an array of weekday indices (0=Sun .. 6=Sat) for custom repeat
   var medicines = [
-    {id:1, name:'Metformin', dosage:'500mg', time:'08:00', compartment:'A1', pillsLeft:6, pillsFull:30, threshold:8, taken:true, adherence:96},
-    {id:2, name:'Vitamin D3', dosage:'1000 IU', time:'08:00', compartment:'A2', pillsLeft:18, pillsFull:30, threshold:8, taken:true, adherence:100},
-    {id:3, name:'Amlodipine', dosage:'5mg', time:'14:00', compartment:'B1', pillsLeft:3, pillsFull:30, threshold:8, taken:false, adherence:82},
-    {id:4, name:'Aspirin', dosage:'75mg', time:'20:00', compartment:'B2', pillsLeft:20, pillsFull:30, threshold:8, taken:false, adherence:91}
+    {id:1, name:'Metformin', compartment:'A1', pillsFull:30, pillsLeft:6, threshold:8, adherence:96,
+      schedule:[{id:'s1', time:'08:00', dosage:'500mg', days:'daily'}]},
+    {id:2, name:'Vitamin D3', compartment:'A2', pillsFull:30, pillsLeft:18, threshold:8, adherence:100,
+      schedule:[{id:'s2', time:'08:00', dosage:'1000 IU', days:'daily'}]},
+    {id:3, name:'Amlodipine', compartment:'B1', pillsFull:30, pillsLeft:3, threshold:8, adherence:82,
+      schedule:[{id:'s3', time:'08:00', dosage:'2.5mg', days:'daily'}, {id:'s4', time:'20:00', dosage:'2.5mg', days:'daily'}]},
+    {id:4, name:'Aspirin', compartment:'B2', pillsFull:30, pillsLeft:20, threshold:8, adherence:91,
+      schedule:[{id:'s5', time:'20:00', dosage:'75mg', days:[1,3,5]}]}
   ];
+
+  // doseStatus['scheduleId|YYYY-MM-DD'] = { taken:true, by:'name', time:'08:02' }
+  var doseStatus = {};
+  // seed today's Metformin + Vitamin D3 doses as already taken, so the demo isn't empty
+  (function seedToday(){
+    var t = todayStr();
+    markKey('s1', t, 'demo');
+    markKey('s2', t, 'demo');
+  })();
+  function markKey(scheduleId, date, by){
+    doseStatus[scheduleId+'|'+date] = {taken:true, by:by, time: nowStr()};
+  }
 
   var activity = [
-    {item:'Metformin', action:'Taken', qty:1, time:'08:02'},
-    {item:'Vitamin D3', action:'Taken', qty:1, time:'08:03'},
-    {item:'Amlodipine', action:'Missed dose', qty:-1, time:'Yesterday 14:00'},
-    {item:'Aspirin', action:'Taken', qty:1, time:'Yesterday 20:05'},
-    {item:'Metformin', action:'Refilled', qty:+30, time:'3 days ago'}
+    {item:'Metformin', action:'Taken', qty:1, by:'demo', time:'Today · 08:02'},
+    {item:'Vitamin D3', action:'Taken', qty:1, by:'demo', time:'Today · 08:03'},
+    {item:'Amlodipine', action:'Missed dose', qty:-1, by:'system', time:'Yesterday · 20:00'},
+    {item:'Aspirin', action:'Taken', qty:1, by:'raj', time:'Yesterday · 20:05'},
+    {item:'Metformin', action:'Refilled', qty:30, by:'priya', time:'3 days ago'}
   ];
 
-  function status(m){
-    if(m.taken) return 'ok';
-    if(m.pillsLeft <= m.threshold) return 'low';
-    return 'low';
+  // ---------- time helpers ----------
+  function pad(n){ return n<10 ? '0'+n : ''+n; }
+  function todayStr(){ var d=new Date(); return d.getFullYear()+'-'+pad(d.getMonth()+1)+'-'+pad(d.getDate()); }
+  function nowStr(){ var d=new Date(); return pad(d.getHours())+':'+pad(d.getMinutes()); }
+  function nowMinutes(){ var d=new Date(); return d.getHours()*60+d.getMinutes(); }
+  function timeToMinutes(t){ var p=t.split(':'); return (+p[0])*60+(+p[1]); }
+
+  // status: 'taken' | 'upcoming' | 'due' | 'missed'
+  function doseState(scheduleId, time){
+    var rec = doseStatus[scheduleId+'|'+todayStr()];
+    if(rec && rec.taken) return {state:'taken', by:rec.by, at:rec.time};
+    var now = nowMinutes();
+    var due = timeToMinutes(time);
+    if(now < due) return {state:'upcoming'};
+    if(now <= due + GRACE_MINUTES) return {state:'due'};
+    return {state:'missed'};
   }
-  function statusLabel(m){ return m.taken ? 'Taken' : 'Pending'; }
+
+  var DAY_LABELS = ['Su','Mo','Tu','We','Th','Fr','Sa'];
+
+  function isScheduledToday(sched){
+    if(sched.days === 'daily') return true;
+    var today = new Date().getDay();
+    return Array.isArray(sched.days) && sched.days.indexOf(today) > -1;
+  }
+  function scheduleDaysPerWeek(sched){
+    if(sched.days === 'daily') return 7;
+    return Array.isArray(sched.days) ? sched.days.length : 0;
+  }
+  function scheduleDaysLabel(sched){
+    if(sched.days === 'daily') return 'Daily';
+    if(!Array.isArray(sched.days) || !sched.days.length) return 'No days set';
+    var sorted = sched.days.slice().sort();
+    return sorted.map(function(d){ return DAY_LABELS[d]; }).join(', ');
+  }
+
+  // every schedule row across every medicine, regardless of which days it repeats on
+  function allSchedules(){
+    var rows = [];
+    medicines.forEach(function(m){
+      m.schedule.forEach(function(s){
+        rows.push({med:m, sched:s});
+      });
+    });
+    rows.sort(function(a,b){ return a.sched.time.localeCompare(b.sched.time); });
+    return rows;
+  }
+  // only the schedule rows that actually fall on today, for Track/Overview/reminders
+  function todaysSchedules(){
+    return allSchedules().filter(function(r){ return isScheduledToday(r.sched); });
+  }
+
   function refillStatus(m){ return m.pillsLeft <= m.threshold ? 'low' : 'ok'; }
 
   // ---------- login ----------
@@ -464,6 +619,7 @@
     var p = document.getElementById('password').value.trim();
     if(!u || !p){ loginError.classList.add('show'); return; }
     loginError.classList.remove('show');
+    currentUser = u;
     document.getElementById('userNameLabel').textContent = u;
     document.getElementById('userAvatar').textContent = u.charAt(0).toUpperCase();
     loginScreen.style.display = 'none';
@@ -483,35 +639,71 @@
   var titles = {
     overview:['Overview',"A snapshot of today's medication intake."],
     track:['Track','Monitor and confirm each scheduled dose.'],
-    edit:['Edit','Update dosage, timing, and refill thresholds.'],
+    edit:['Manage medicines','Add a new medicine, or edit dosage, timing, and refill settings.'],
     report:['Report','Adherence trends across all medicines.'],
     restock:['Restock','Compartments that have crossed their refill threshold.']
   };
+  function goToPage(key){
+    navItems.forEach(function(b){b.classList.remove('active');});
+    document.querySelector('.nav-item[data-page="'+key+'"]').classList.add('active');
+    pages.forEach(function(p){p.classList.remove('active');});
+    document.getElementById('page-'+key).classList.add('active');
+    document.getElementById('topbarTitle').textContent = titles[key][0];
+    document.getElementById('topbarDesc').textContent = titles[key][1];
+  }
   navItems.forEach(function(btn){
-    btn.addEventListener('click', function(){
-      navItems.forEach(function(b){b.classList.remove('active');});
-      btn.classList.add('active');
-      var key = btn.dataset.page;
-      pages.forEach(function(p){p.classList.remove('active');});
-      document.getElementById('page-'+key).classList.add('active');
-      document.getElementById('topbarTitle').textContent = titles[key][0];
-      document.getElementById('topbarDesc').textContent = titles[key][1];
-    });
+    btn.addEventListener('click', function(){ goToPage(btn.dataset.page); });
   });
 
   document.getElementById('globalSearch').addEventListener('input', function(e){
     var q = e.target.value.toLowerCase();
-    document.querySelector('.nav-item[data-page="track"]').click();
+    goToPage('track');
     renderTrack(q);
+  });
+
+  // ---------- reminder banner ----------
+  function renderReminder(){
+    var banner = document.getElementById('reminderBanner');
+    if(reminderDismissed){ banner.classList.remove('show'); return; }
+    var rows = todaysSchedules().map(function(r){ return {r:r, st: doseState(r.sched.id, r.sched.time)}; });
+    var due = rows.filter(function(x){ return x.st.state==='due'; }).length;
+    var missed = rows.filter(function(x){ return x.st.state==='missed'; }).length;
+    if(due+missed === 0){ banner.classList.remove('show'); return; }
+    var parts = [];
+    if(due) parts.push(due+' dose'+(due===1?'':'s')+' due now');
+    if(missed) parts.push(missed+' missed');
+    document.getElementById('reminderText').textContent = parts.join(' · ');
+    banner.classList.add('show');
+  }
+  document.getElementById('reminderDismiss').addEventListener('click', function(){
+    reminderDismissed = true;
+    renderReminder();
+  });
+  // Always jump to Track and draw the eye to the due/missed rows — even if
+  // Track is already the open page, in which case switching pages alone
+  // is a no-op and nothing would otherwise appear to happen.
+  document.getElementById('reminderGoto').addEventListener('click', function(){
+    goToPage('track');
+    renderTrack('');
+    setTimeout(function(){
+      var panel = document.querySelector('#page-track .panel');
+      if(panel) panel.scrollIntoView({behavior:'smooth', block:'start'});
+      document.querySelectorAll('#trackTableBody tr[data-state="due"], #trackTableBody tr[data-state="missed"]').forEach(function(row){
+        row.classList.remove('row-flash');
+        void row.offsetWidth; // restart the flash animation if it already ran once
+        row.classList.add('row-flash');
+      });
+    }, 50);
   });
 
   // ---------- overview ----------
   function renderOverview(){
-    var total = medicines.length;
-    var taken = medicines.filter(function(m){return m.taken;}).length;
-    var pending = medicines.filter(function(m){return !m.taken;}).length;
-    var missed = activity.filter(function(a){return a.action==='Missed dose';}).length;
-    document.getElementById('statTotal').textContent = total;
+    var rows = todaysSchedules().map(function(r){ return doseState(r.sched.id, r.sched.time); });
+    var taken = rows.filter(function(s){ return s.state==='taken'; }).length;
+    var pending = rows.filter(function(s){ return s.state==='due' || s.state==='upcoming'; }).length;
+    var missed = rows.filter(function(s){ return s.state==='missed'; }).length;
+
+    document.getElementById('statTotal').textContent = medicines.length;
     document.getElementById('statTaken').textContent = taken;
     document.getElementById('statPending').textContent = pending;
     document.getElementById('statMissed').textContent = missed;
@@ -519,15 +711,21 @@
     renderBars('overviewBars', function(m){return m.adherence;}, '%');
 
     var mv = document.getElementById('overviewMovements');
-    mv.innerHTML = activity.map(function(a){
-      var cls = a.qty > 0 ? 'up' : 'down';
-      return '<div class="movement-item"><span class="m-item">'+a.item+' — '+a.action+'</span><span class="m-time">'+(a.qty>0?'+':'')+(a.qty!==0?a.qty+' · ':'')+a.time+'</span></div>';
-    }).join('');
+    if(!activity.length){
+      mv.innerHTML = '<div class="empty-note">No activity yet.</div>';
+    } else {
+      mv.innerHTML = activity.slice(0,6).map(function(a){
+        return '<div class="movement-item">'+
+          '<span><span class="m-item">'+a.item+'</span> — '+a.action+' <span class="m-by">by '+a.by+'</span></span>'+
+          '<span class="m-time">'+(a.qty>0?'+':'')+(a.qty!==0?a.qty+' · ':'')+a.time+'</span></div>';
+      }).join('');
+    }
   }
 
   function renderBars(targetId, valueFn, suffix){
     var el = document.getElementById(targetId);
-    var max = Math.max.apply(null, medicines.map(valueFn));
+    if(!medicines.length){ el.innerHTML = '<div class="empty-note">No medicines yet.</div>'; return; }
+    var max = Math.max.apply(null, medicines.map(valueFn)) || 1;
     el.innerHTML = medicines.map(function(m){
       var v = valueFn(m);
       var pct = Math.round((v/max)*100);
@@ -536,63 +734,283 @@
   }
 
   // ---------- track ----------
+  var stateLabel = {taken:'Taken', upcoming:'Upcoming', due:'Due now', missed:'Missed'};
+  var stateBadge = {taken:'ok', upcoming:'upcoming', due:'due', missed:'out'};
+
   function renderTrack(filter){
     var body = document.getElementById('trackTableBody');
     var q = (filter||'').toLowerCase();
-    var rows = medicines.filter(function(m){ return !q || m.name.toLowerCase().indexOf(q)>-1; });
-    document.getElementById('trackCountLabel').textContent = rows.length + ' medicine' + (rows.length===1?'':'s');
-    body.innerHTML = rows.map(function(m){
-      var s = status(m);
-      return '<tr><td>'+m.name+'</td><td>'+m.dosage+'</td><td>'+m.time+'</td><td>'+m.compartment+'</td>'+
-        '<td><span class="badge '+s+'">'+statusLabel(m)+'</span></td>'+
-        '<td><button class="btn-restock" data-id="'+m.id+'" '+(m.taken?'disabled style="background:var(--panel-3); color:var(--text-faint);"':'')+'>'+(m.taken?'Taken ✓':'Mark taken')+'</button></td></tr>';
-    }).join('') || '<tr><td colspan="6" class="empty-note">No medicines match your search.</td></tr>';
-    document.getElementById('navTrackCount').textContent = medicines.length;
+    var rows = todaysSchedules().filter(function(r){ return !q || r.med.name.toLowerCase().indexOf(q)>-1; });
 
-    body.querySelectorAll('button[data-id]').forEach(function(btn){
+    document.getElementById('trackCountLabel').textContent = rows.length + ' dose' + (rows.length===1?'':'s') + ' today';
+    document.getElementById('navTrackCount').textContent = todaysSchedules().length;
+
+    if(!rows.length){
+      body.innerHTML = '<tr><td colspan="6" class="empty-note">'+
+        (medicines.length ? 'No doses scheduled for today.' : 'No medicines yet — add one to start tracking doses.')+
+        '</td></tr>';
+      return;
+    }
+
+    body.innerHTML = rows.map(function(r){
+      var st = doseState(r.sched.id, r.sched.time);
+      var taken = st.state === 'taken';
+      var label = stateLabel[st.state] + (taken && st.by ? ' by '+st.by : '');
+      return '<tr data-state="'+st.state+'"><td>'+r.med.name+'</td><td>'+r.sched.dosage+'</td>'+
+        '<td>'+r.sched.time+(r.sched.days!=='daily' ? '<div style="font-size:10.5px;color:var(--text-faint);font-weight:600;">'+scheduleDaysLabel(r.sched)+'</div>' : '')+'</td>'+
+        '<td>'+r.med.compartment+'</td>'+
+        '<td><span class="badge '+stateBadge[st.state]+'">'+label+'</span></td>'+
+        '<td><button class="btn-restock" data-sid="'+r.sched.id+'" data-mid="'+r.med.id+'" '+(taken?'disabled':'')+'>'+(taken?'Taken ✓':'Mark taken')+'</button></td></tr>';
+    }).join('');
+
+    body.querySelectorAll('button[data-sid]').forEach(function(btn){
       btn.addEventListener('click', function(){
-        var m = medicines.find(function(x){return x.id == btn.dataset.id;});
-        if(m.taken) return;
-        m.taken = true;
-        m.pillsLeft = Math.max(m.pillsLeft - 1, 0);
-        activity.unshift({item:m.name, action:'Taken', qty:1, time:'Just now'});
-        renderAll();
+        markTaken(btn.dataset.mid, btn.dataset.sid);
       });
     });
   }
 
-  // ---------- edit ----------
-  var editSelect = document.getElementById('editSelect');
-  function renderEditOptions(){
-    editSelect.innerHTML = medicines.map(function(m){ return '<option value="'+m.id+'">'+m.name+'</option>'; }).join('');
-    loadEditItem(medicines[0].id);
+  function markTaken(medId, schedId){
+    var m = medicines.find(function(x){ return x.id == medId; });
+    if(!m) return;
+    var key = schedId+'|'+todayStr();
+    if(doseStatus[key] && doseStatus[key].taken) return;
+    doseStatus[key] = {taken:true, by:currentUser, time: nowStr()};
+    m.pillsLeft = Math.max(m.pillsLeft - 1, 0);
+    var sched = m.schedule.find(function(s){ return s.id === schedId; });
+    activity.unshift({item:m.name, action:'Taken', qty:1, by:currentUser, time:'Just now · '+(sched?sched.time:'')});
+    renderAll();
   }
+
+  // ---------- manage (add / edit / delete) ----------
+  var editSelect = document.getElementById('editSelect');
+  var scheduleEditor = document.getElementById('scheduleEditor');
+  var editingId = null; // null = "add new medicine" mode
+  var workingSchedule = []; // schedule rows currently in the form, edited locally before save
+
+  function renderEditOptions(){
+    if(!medicines.length){
+      document.getElementById('editSelectWrap').style.display = 'none';
+      startNewMedicine();
+      return;
+    }
+    document.getElementById('editSelectWrap').style.display = '';
+    editSelect.innerHTML = medicines.map(function(m){ return '<option value="'+m.id+'">'+m.name+'</option>'; }).join('');
+    if(editingId === null || !medicines.find(function(m){return m.id===editingId;})){
+      loadEditItem(medicines[0].id);
+      editSelect.value = medicines[0].id;
+    } else {
+      editSelect.value = editingId;
+    }
+  }
+
+  function blankScheduleRow(){ return {id:'new-'+(nextScheduleUid++), time:'', dosage:'', days:'daily'}; }
+
+  function startNewMedicine(){
+    editingId = null;
+    document.getElementById('editName').value = '';
+    document.getElementById('editCompartment').value = '';
+    document.getElementById('editThreshold').value = 8;
+    document.getElementById('editPillsFull').value = 30;
+    document.getElementById('editPillsLeft').value = 30;
+    workingSchedule = [blankScheduleRow()];
+    document.getElementById('deleteMedBtn').style.display = 'none';
+    document.getElementById('saveEditBtn').textContent = 'Add medicine';
+    document.getElementById('editSaveMsg').classList.remove('show');
+    clearFormError();
+    renderScheduleEditor();
+  }
+
   function loadEditItem(id){
     var m = medicines.find(function(x){return x.id==id;});
     if(!m) return;
-    document.getElementById('editDosage').value = m.dosage;
-    document.getElementById('editTime').value = m.time;
+    editingId = m.id;
+    document.getElementById('editName').value = m.name;
     document.getElementById('editCompartment').value = m.compartment;
     document.getElementById('editThreshold').value = m.threshold;
+    document.getElementById('editPillsFull').value = m.pillsFull;
+    document.getElementById('editPillsLeft').value = m.pillsLeft;
+    workingSchedule = m.schedule.map(function(s){ return {id:s.id, time:s.time, dosage:s.dosage, days:s.days}; });
+    document.getElementById('deleteMedBtn').style.display = '';
+    document.getElementById('saveEditBtn').textContent = 'Save changes';
     document.getElementById('editSaveMsg').classList.remove('show');
+    clearFormError();
+    renderScheduleEditor();
   }
+
+  function renderScheduleEditor(){
+    scheduleEditor.innerHTML = workingSchedule.map(function(row, idx){
+      return '<div class="schedule-row" data-idx="'+idx+'">'+
+        '<input type="time" class="sched-time" value="'+row.time+'">'+
+        '<input type="text" class="sched-dosage" placeholder="Dosage, e.g. 500mg" value="'+row.dosage+'">'+
+        '<button type="button" class="btn-remove-time" title="Remove this time">✕</button></div>'+
+        '<div class="days-row" data-days-idx="'+idx+'">'+renderDaysChips(row)+'</div>';
+    }).join('');
+
+    scheduleEditor.querySelectorAll('.schedule-row').forEach(function(rowEl){
+      var idx = +rowEl.dataset.idx;
+      rowEl.querySelector('.sched-time').addEventListener('input', function(e){ workingSchedule[idx].time = e.target.value; });
+      rowEl.querySelector('.sched-dosage').addEventListener('input', function(e){ workingSchedule[idx].dosage = e.target.value; });
+      rowEl.querySelector('.btn-remove-time').addEventListener('click', function(){
+        workingSchedule.splice(idx,1);
+        if(!workingSchedule.length) workingSchedule.push(blankScheduleRow());
+        renderScheduleEditor();
+      });
+    });
+
+    scheduleEditor.querySelectorAll('.days-row').forEach(function(rowEl){
+      var idx = +rowEl.dataset.daysIdx;
+      rowEl.querySelectorAll('.day-chip').forEach(function(chip){
+        chip.addEventListener('click', function(){
+          var day = chip.dataset.day;
+          var row = workingSchedule[idx];
+          if(day === 'daily'){
+            row.days = 'daily';
+          } else {
+            var d = +day;
+            if(row.days === 'daily') row.days = [];
+            var pos = row.days.indexOf(d);
+            if(pos > -1) row.days.splice(pos,1); else row.days.push(d);
+          }
+          renderScheduleEditor();
+        });
+      });
+    });
+  }
+
+  function renderDaysChips(row){
+    var isDaily = row.days === 'daily';
+    var html = '<button type="button" class="day-chip daily-chip'+(isDaily?' active':'')+'" data-day="daily">Daily</button>';
+    DAY_LABELS.forEach(function(lbl, di){
+      var active = !isDaily && Array.isArray(row.days) && row.days.indexOf(di) > -1;
+      html += '<button type="button" class="day-chip'+(active?' active':'')+'" data-day="'+di+'">'+lbl+'</button>';
+    });
+    return html;
+  }
+
+  document.getElementById('addTimeBtn').addEventListener('click', function(){
+    workingSchedule.push(blankScheduleRow());
+    renderScheduleEditor();
+  });
+
+  document.getElementById('newMedBtn').addEventListener('click', function(){
+    goToPage('edit');
+    startNewMedicine();
+  });
+
   editSelect.addEventListener('change', function(){ loadEditItem(this.value); });
-  document.getElementById('resetEditBtn').addEventListener('click', function(){ loadEditItem(editSelect.value); });
+  document.getElementById('resetEditBtn').addEventListener('click', function(){
+    if(editingId === null) startNewMedicine(); else loadEditItem(editingId);
+  });
+
+  function clearFormError(){
+    var el = document.getElementById('formError');
+    el.textContent = ''; el.classList.remove('show');
+  }
+  function showFormError(msg){
+    var el = document.getElementById('formError');
+    el.textContent = msg; el.classList.add('show');
+  }
+
+  function validateForm(){
+    var name = document.getElementById('editName').value.trim();
+    var compartment = document.getElementById('editCompartment').value.trim();
+    var threshold = +document.getElementById('editThreshold').value;
+    var pillsFull = +document.getElementById('editPillsFull').value;
+    var pillsLeft = +document.getElementById('editPillsLeft').value;
+
+    if(!name) return 'Medicine name is required.';
+    if(!compartment) return 'Compartment is required.';
+    if(!(pillsFull > 0)) return 'Total pills per refill must be greater than 0.';
+    if(pillsLeft < 0 || pillsLeft > pillsFull) return 'Pills currently in compartment must be between 0 and the refill total.';
+    if(threshold < 0 || threshold > pillsFull) return 'Refill threshold must be between 0 and the refill total.';
+    if(!workingSchedule.length) return 'Add at least one scheduled time.';
+    for(var i=0;i<workingSchedule.length;i++){
+      if(!workingSchedule[i].time) return 'Every scheduled dose needs a time.';
+      if(!workingSchedule[i].dosage.trim()) return 'Every scheduled dose needs a dosage amount.';
+      var days = workingSchedule[i].days;
+      if(days !== 'daily' && (!Array.isArray(days) || !days.length)) return 'Choose "Daily" or at least one day for every scheduled dose.';
+    }
+    for(var i=0;i<workingSchedule.length;i++){
+      for(var j=i+1;j<workingSchedule.length;j++){
+        if(workingSchedule[i].time && workingSchedule[i].time === workingSchedule[j].time && daysOverlap(workingSchedule[i].days, workingSchedule[j].days)){
+          return 'Two doses are scheduled at the same time on the same day — adjust one of them.';
+        }
+      }
+    }
+    return null;
+  }
+
+  function daysOverlap(a, b){
+    if(a === 'daily' || b === 'daily') return true;
+    if(!Array.isArray(a) || !Array.isArray(b)) return false;
+    return a.some(function(d){ return b.indexOf(d) > -1; });
+  }
+
   document.getElementById('saveEditBtn').addEventListener('click', function(){
-    var m = medicines.find(function(x){return x.id==editSelect.value;});
-    if(!m) return;
-    m.dosage = document.getElementById('editDosage').value;
-    m.time = document.getElementById('editTime').value;
-    m.compartment = document.getElementById('editCompartment').value;
-    m.threshold = parseInt(document.getElementById('editThreshold').value)||0;
+    var err = validateForm();
+    if(err){ showFormError(err); return; }
+    clearFormError();
+
+    var name = document.getElementById('editName').value.trim();
+    var compartment = document.getElementById('editCompartment').value.trim();
+    var threshold = +document.getElementById('editThreshold').value;
+    var pillsFull = +document.getElementById('editPillsFull').value;
+    var pillsLeft = +document.getElementById('editPillsLeft').value;
+
+    if(editingId === null){
+      var newMed = {
+        id: nextMedId++, name:name, compartment:compartment,
+        pillsFull:pillsFull, pillsLeft:pillsLeft, threshold:threshold, adherence:100,
+        schedule: workingSchedule.map(function(s){ return {id:'s'+(nextScheduleUid++), time:s.time, dosage:s.dosage.trim(), days:s.days}; })
+      };
+      medicines.push(newMed);
+      activity.unshift({item:name, action:'Added', qty:0, by:currentUser, time:'Just now'});
+      editingId = newMed.id;
+      document.getElementById('editSaveMsg').textContent = 'New medicine added.';
+    } else {
+      var m = medicines.find(function(x){return x.id===editingId;});
+      var correctionDiff = pillsLeft - m.pillsLeft;
+      m.name = name; m.compartment = compartment; m.threshold = threshold; m.pillsFull = pillsFull;
+      if(correctionDiff !== 0){
+        activity.unshift({item:name, action:'Pill count corrected', qty:correctionDiff, by:currentUser, time:'Just now'});
+      }
+      m.pillsLeft = pillsLeft;
+      m.schedule = workingSchedule.map(function(s){
+        return {id: s.id.indexOf('new-')===0 ? 's'+(nextScheduleUid++) : s.id, time:s.time, dosage:s.dosage.trim(), days:s.days};
+      });
+      activity.unshift({item:name, action:'Schedule updated', qty:0, by:currentUser, time:'Just now'});
+      document.getElementById('editSaveMsg').textContent = 'Changes saved to the medicine record.';
+    }
+
     document.getElementById('editSaveMsg').classList.add('show');
+    renderAll();
+    editSelect.value = editingId;
+  });
+
+  document.getElementById('deleteMedBtn').addEventListener('click', function(){
+    if(editingId === null) return;
+    var m = medicines.find(function(x){return x.id===editingId;});
+    if(!m) return;
+    if(!confirm('Delete '+m.name+'? This removes it from the schedule. Its past activity log entries are kept for the record.')) return;
+    medicines = medicines.filter(function(x){return x.id!==editingId;});
+    activity.unshift({item:m.name, action:'Removed', qty:0, by:currentUser, time:'Just now'});
+    editingId = null;
     renderAll();
   });
 
   // ---------- report ----------
   function renderReport(){
+    if(!medicines.length){
+      document.getElementById('repAdherence').textContent = '—';
+      document.getElementById('repCount').textContent = '0';
+      document.getElementById('repDoses').textContent = '0';
+      document.getElementById('repRestock').textContent = '0';
+      document.getElementById('reportBars').innerHTML = '<div class="empty-note">No medicines yet.</div>';
+      return;
+    }
     var avgAdherence = Math.round(medicines.reduce(function(s,m){return s+m.adherence;},0)/medicines.length);
-    var doses = medicines.length * 7;
+    var doses = allSchedules().reduce(function(sum, r){ return sum + scheduleDaysPerWeek(r.sched); }, 0);
     var needRestock = medicines.filter(function(m){return refillStatus(m)==='low';}).length;
     document.getElementById('repAdherence').textContent = avgAdherence+'%';
     document.getElementById('repCount').textContent = medicines.length;
@@ -606,13 +1024,17 @@
     var needed = medicines.filter(function(m){return refillStatus(m)==='low';});
     document.getElementById('restockCountLabel').textContent = needed.length + ' item' + (needed.length===1?'':'s');
     document.getElementById('navRestockCount').textContent = needed.length;
+    var navCount = document.getElementById('navRestockCount');
+    if(needed.length) navCount.classList.add('alert'); else navCount.classList.remove('alert');
+
     var list = document.getElementById('restockList');
+    if(!medicines.length){ list.innerHTML = '<div class="empty-note">No medicines yet.</div>'; return; }
     if(!needed.length){ list.innerHTML = '<div class="empty-note">All compartments are stocked.</div>'; return; }
     list.innerHTML = needed.map(function(m){
       return '<div class="restock-card" data-id="'+m.id+'">'+
         '<div class="r-info"><div class="r-name">'+m.name+' <span class="badge low" style="margin-left:6px;">Refill soon</span></div>'+
         '<div class="r-meta">Compartment '+m.compartment+' · '+m.pillsLeft+' of '+m.pillsFull+' pills left</div></div>'+
-        '<input type="number" min="1" value="'+ (m.pillsFull - m.pillsLeft) +'" class="restock-qty">'+
+        '<input type="number" min="1" max="'+ (m.pillsFull - m.pillsLeft || m.pillsFull) +'" value="'+ (m.pillsFull - m.pillsLeft) +'" class="restock-qty">'+
         '<button class="btn-restock">Mark refilled</button></div>';
     }).join('');
 
@@ -620,8 +1042,9 @@
       card.querySelector('.btn-restock').addEventListener('click', function(){
         var m = medicines.find(function(x){return x.id==card.dataset.id;});
         var add = parseInt(card.querySelector('.restock-qty').value)||0;
+        if(add <= 0) return;
         m.pillsLeft = Math.min(m.pillsLeft + add, m.pillsFull);
-        activity.unshift({item:m.name, action:'Refilled', qty:add, time:'Just now'});
+        activity.unshift({item:m.name, action:'Refilled', qty:add, by:currentUser, time:'Just now'});
         renderAll();
       });
     });
@@ -630,14 +1053,16 @@
   // ---------- ticker ----------
   function renderTicker(){
     var track = document.getElementById('tickerTrack');
-    var frag = activity.map(function(a){
+    if(!activity.length){ track.innerHTML = ''; return; }
+    var frag = activity.slice(0,12).map(function(a){
       var cls = a.qty>0 ? 'up' : (a.qty<0 ? 'down' : '');
-      return '<span class="'+cls+'"><b>'+a.item+'</b> '+a.action+(a.qty!==0?' '+(a.qty>0?'+':'')+a.qty:'')+' · '+a.time+'</span>';
+      return '<span class="'+cls+'"><b>'+a.item+'</b> '+a.action+(a.qty!==0?' '+(a.qty>0?'+':'')+a.qty:'')+' · by '+a.by+'</span>';
     }).join('');
     track.innerHTML = frag + frag;
   }
 
   function renderAll(){
+    renderReminder();
     renderOverview();
     renderTrack('');
     renderEditOptions();
@@ -645,6 +1070,11 @@
     renderRestock();
     renderTicker();
   }
+
+  // refresh due/missed states every 30s so the demo reflects real elapsed time
+  setInterval(function(){
+    if(dashboard.classList.contains('active')) renderAll();
+  }, 30000);
 })();
 </script>
 </body>
