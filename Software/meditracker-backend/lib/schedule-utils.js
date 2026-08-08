@@ -1,6 +1,5 @@
 // lib/schedule-utils.js
-// Pure functions, no storage dependency — used by every route, and the
-// logic here should stay in lockstep with the frontend's own copy of it.
+// Pure functions, no storage dependency.
 
 const GRACE_MINUTES = 60; // how long after the scheduled time a dose stays "due" before flipping to "missed"
 
@@ -41,11 +40,4 @@ function doseState(row) {
   return 'missed';
 }
 
-module.exports = {
-  GRACE_MINUTES,
-  todayDate,
-  isScheduledToday,
-  daysPerWeek,
-  daysOverlap,
-  doseState
-};
+module.exports = { GRACE_MINUTES, todayDate, isScheduledToday, daysPerWeek, daysOverlap, doseState };
