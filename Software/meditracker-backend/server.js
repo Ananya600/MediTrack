@@ -3,6 +3,7 @@ const cors = require('cors');
 const initSqlJs = require('sql.js');
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 
 const app = express();
 const PORT = process.env.PORT || 4000;
@@ -73,6 +74,13 @@ async function startServer() {
       action TEXT NOT NULL,
       createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
     );
+
+    CREATE TABLE IF NOT EXISTS devices (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL,
+      apiKey TEXT NOT NULL UNIQUE,
+      createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
   `);
   
   // Safe migration check for existing databases that might lack timing/comments columns
@@ -83,7 +91,39 @@ async function startServer() {
     db.run(`ALTER TABLE schedules ADD COLUMN comments TEXT DEFAULT ''`);
   } catch (e) { /* Column likely already exists */ }
 
+  // Ensure exactly one device/API key exists for the ESP32 to authenticate with.
+  // Generated once and reused on every future server start.
+  let deviceApiKey;
+  const deviceStmt = db.prepare("SELECT apiKey FROM devices LIMIT 1");
+  if (deviceStmt.step()) {
+    deviceApiKey = deviceStmt.getAsObject().apiKey;
+    deviceStmt.free();
+    console.log('Using existing device API key');
+  } else {
+    deviceStmt.free();
+    deviceApiKey = crypto.randomBytes(16).toString('hex');
+    db.run(`INSERT INTO devices (name, apiKey) VALUES (?, ?)`, ['Pillbox 1', deviceApiKey]);
+    console.log('Generated new device API key:', deviceApiKey);
+  }
+
   saveDatabase();
+
+  // --- DEVICE KEY ENDPOINT (intentionally NOT behind requireApiKey — the
+  // dashboard needs to fetch it before it has a key to send) ---
+  app.get('/api/device-key', (req, res) => {
+    res.json({ apiKey: deviceApiKey, deviceName: 'Pillbox 1' });
+  });
+
+  // Everything below this line requires the ESP32 (or the dashboard, which
+  // fetches the key above first) to send a matching x-api-key header.
+  function requireApiKey(req, res, next) {
+    const key = req.header('x-api-key');
+    if (!key || key !== deviceApiKey) {
+      return res.status(401).json({ error: 'Missing or invalid API key' });
+    }
+    next();
+  }
+  app.use('/api', requireApiKey);
 
   // --- API ENDPOINTS ---
 

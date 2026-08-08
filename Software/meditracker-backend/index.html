@@ -330,6 +330,9 @@
       <button class="nav-item" data-page="track"><span class="ic">⏱</span> Daily Schedule <span class="count" id="navTrackCount">0</span></button>
       <button class="nav-item" data-page="edit"><span class="ic">✎</span> Manage Medicines</button>
       <button class="nav-item" data-page="restock"><span class="ic">↻</span> Restock Refills <span class="count" id="navRestockCount">0</span></button>
+
+      <div class="nav-label" style="margin-top:18px;">Hardware</div>
+      <button class="nav-item" data-page="device"><span class="ic">🔑</span> Device Setup</button>
     </nav>
 
     <div class="sidebar-foot">
@@ -513,6 +516,31 @@
         <div id="restockList"></div>
       </div>
     </section>
+
+    <section class="page" id="page-device">
+      <div class="panel">
+        <div class="panel-head">
+          <h3>ESP32 Device API Key</h3>
+        </div>
+        <div style="padding:20px;">
+          <p style="font-size:13.5px; color:var(--text-dim); line-height:1.6; margin-bottom:16px;">
+            Your pill box hardware needs this key to talk to the server. Paste it into your ESP32 sketch as <code>DEVICE_API_KEY</code>, and send it on every request as an <code>x-api-key</code> header.
+          </p>
+          <div style="display:flex; align-items:center; gap:10px; margin-bottom:20px;">
+            <code id="deviceApiKeyValue" style="flex:1; background:var(--panel-3); border:1px solid var(--line); border-radius:10px; padding:12px 14px; font-size:14px; word-break:break-all;">Loading...</code>
+            <button class="btn-add" id="copyDeviceKeyBtn" style="white-space:nowrap;">Copy</button>
+          </div>
+          <div style="background:var(--panel-2); border:1px solid var(--line); border-radius:12px; padding:16px 18px;">
+            <div style="font-size:12px; font-weight:700; color:var(--text-faint); text-transform:uppercase; letter-spacing:0.04em; margin-bottom:10px;">Endpoints your ESP32 will use</div>
+            <div style="font-size:13px; font-family:monospace; line-height:2; color:var(--text-dim);">
+              GET &nbsp;/api/doses/today<br>
+              POST /api/doses/:scheduleId/taken<br>
+              POST /api/restock/:id
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
   </div>
 </div>
 
@@ -530,6 +558,7 @@
 <script>
 (function(){
   var API_BASE = '/api';
+  var deviceApiKey = '';
 
   var field = document.getElementById('dotField');
   for(var i=0; i<72; i++){
@@ -551,6 +580,7 @@
     options = options || {};
     var headers = options.headers || {};
     headers['Content-Type'] = 'application/json';
+    if (deviceApiKey) headers['x-api-key'] = deviceApiKey;
 
     try {
       const res = await fetch(API_BASE + path, {
@@ -567,6 +597,22 @@
     } catch(err) {
       console.error('API Error:', err);
       return null;
+    }
+  }
+
+  async function loadDeviceKey(){
+    // Deliberately a plain fetch, not apiFetch — this call happens before
+    // we have a key, and this one endpoint doesn't require one.
+    try {
+      const res = await fetch(API_BASE + '/device-key');
+      const data = await res.json();
+      if (data && data.apiKey) {
+        deviceApiKey = data.apiKey;
+        var el = document.getElementById('deviceApiKeyValue');
+        if (el) el.textContent = deviceApiKey;
+      }
+    } catch(err) {
+      console.error('Could not load device key:', err);
     }
   }
 
@@ -612,6 +658,7 @@
       
       loginScreen.style.display = 'none';
       dashboard.classList.add('active');
+      await loadDeviceKey();
       await refreshAll();
     }
   });
@@ -630,7 +677,8 @@
     history: ['Compartment Log', 'Logs for refills and compartment operations.'],
     track: ['Daily Schedule', 'Real-time schedule for today.'],
     edit: ['Manage Medicines', 'Map medicines to specific pill box compartments.'],
-    restock: ['Restock Refills', 'Compartments requiring pill replenishment.']
+    restock: ['Restock Refills', 'Compartments requiring pill replenishment.'],
+    device: ['Device Setup', 'API key and endpoints for your ESP32 pill box.']
   };
 
   function goToPage(key){
@@ -650,6 +698,16 @@
 
   navItems.forEach(function(btn){
     btn.addEventListener('click', function(){ goToPage(btn.dataset.page); });
+  });
+
+  document.getElementById('copyDeviceKeyBtn').addEventListener('click', function(){
+    if(!deviceApiKey) return;
+    navigator.clipboard.writeText(deviceApiKey).then(function(){
+      var btn = document.getElementById('copyDeviceKeyBtn');
+      var original = btn.textContent;
+      btn.textContent = 'Copied!';
+      setTimeout(function(){ btn.textContent = original; }, 1500);
+    });
   });
 
   function renderOverview(){
