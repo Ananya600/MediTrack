@@ -1,3 +1,4 @@
 node_modules/
 .env
 db/meditrack.json
+Software/meditracker-backend/meditracker.db
