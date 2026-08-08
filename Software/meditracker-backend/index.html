@@ -475,7 +475,7 @@
             </div>
             <div>
               <label for="editCompartment">Compartment ID</label>
-              <input type="text" id="editCompartment" 
+              <input type="text" id="editCompartment">
             </div>
             <div>
               <label for="editThreshold">Refill Alert Threshold (Pills)</label>
@@ -1068,14 +1068,18 @@
     if(!name || !compartment) return alert('Name and compartment required.');
 
     var schedule = [];
-    document.querySelectorAll('#scheduleEditor .schedule-row-wrap').forEach(function(wrap){
+    var existingSchedule = currentEditingId ? (medicines.find(function(m){ return String(m.id) === String(currentEditingId); }) || {}).schedule || [] : [];
+    document.querySelectorAll('#scheduleEditor .schedule-row-wrap').forEach(function(wrap, idx){
       var time = wrap.querySelector('.sched-time').value;
       var dosage = wrap.querySelector('.sched-dosage').value;
       var timing = wrap.querySelector('.sched-timing').value;
       var comments = wrap.querySelector('.sched-comments').value;
       var isDaily = wrap.querySelector('.daily-chip').classList.contains('active');
       var days = isDaily ? 'daily' : Array.from(wrap.querySelectorAll('.day-chip:not(.daily-chip).active')).map(function(c){ return parseInt(c.dataset.day,10); });
-      if(time && dosage) schedule.push({ time: time, dosage: dosage, timing: timing, comments: comments, days: days });
+      // preserve the existing row's id (by position) so the backend updates
+      // it in place instead of recreating it and losing today's dose status
+      var existingId = existingSchedule[idx] ? existingSchedule[idx].id : undefined;
+      if(time && dosage) schedule.push({ id: existingId, time: time, dosage: dosage, timing: timing, comments: comments, days: days });
     });
 
     var payload = {

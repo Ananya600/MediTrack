@@ -207,18 +207,44 @@ async function startServer() {
         [name, compartment, threshold, pillsFull, pillsLeft, medId]
       );
 
-      // Re-sync schedules cleanly
-      db.run(`DELETE FROM schedules WHERE medicine_id = ?`, [medId]);
+      // Reconcile schedules instead of wiping and recreating them: a row
+      // whose submitted id matches an existing row for this medicine is
+      // updated in place, so today's dose_logs (taken/missed status) stay
+      // attached to it. Rows with no id, or an id that doesn't match, are
+      // inserted fresh. Any existing row not present in the submitted list
+      // is removed.
+      const existingStmt = db.prepare(`SELECT id FROM schedules WHERE medicine_id = ?`);
+      existingStmt.bind([medId]);
+      const existingIds = [];
+      while (existingStmt.step()) existingIds.push(existingStmt.getAsObject().id);
+      existingStmt.free();
 
+      const keepIds = [];
       if (schedule && schedule.length) {
         schedule.forEach(s => {
           const daysVal = Array.isArray(s.days) ? JSON.stringify(s.days) : (s.days || 'daily');
-          db.run(
-            `INSERT INTO schedules (medicine_id, time, dosage, timing, comments, days) VALUES (?, ?, ?, ?, ?, ?)`,
-            [medId, s.time, s.dosage, s.timing || 'After Food', s.comments || '', daysVal]
-          );
+          const matchesExisting = s.id && existingIds.includes(Number(s.id));
+
+          if (matchesExisting) {
+            db.run(
+              `UPDATE schedules SET time = ?, dosage = ?, timing = ?, comments = ?, days = ? WHERE id = ? AND medicine_id = ?`,
+              [s.time, s.dosage, s.timing || 'After Food', s.comments || '', daysVal, s.id, medId]
+            );
+            keepIds.push(Number(s.id));
+          } else {
+            db.run(
+              `INSERT INTO schedules (medicine_id, time, dosage, timing, comments, days) VALUES (?, ?, ?, ?, ?, ?)`,
+              [medId, s.time, s.dosage, s.timing || 'After Food', s.comments || '', daysVal]
+            );
+            const idRes = db.exec("SELECT last_insert_rowid() as id");
+            keepIds.push(idRes[0].values[0][0]);
+          }
         });
       }
+
+      existingIds
+        .filter(id => !keepIds.includes(id))
+        .forEach(id => db.run(`DELETE FROM schedules WHERE id = ?`, [id]));
 
       db.run(`INSERT INTO activity_logs (item, action) VALUES (?, ?)`, [name, 'Updated medicine configuration']);
       saveDatabase();
@@ -264,13 +290,23 @@ async function startServer() {
   });
 
   // GET: Fetch today's doses (includes timing and comments context)
+  // Filters to schedules actually due today (daily, or matching day-of-week),
+  // and gives a "due" grace window before flipping a dose to "missed".
+  const GRACE_MINUTES = 30;
+  function timeToMinutes(t) {
+    const [h, m] = String(t || '00:00').split(':').map(Number);
+    return h * 60 + (m || 0);
+  }
+
   app.get('/api/doses/today', (req, res) => {
     try {
-      const todayStr = new Date().toISOString().split('T')[0];
-      const currentTime = new Date().toTimeString().slice(0, 5);
+      const now = new Date();
+      const todayStr = now.toISOString().split('T')[0];
+      const nowMinutes = now.getHours() * 60 + now.getMinutes();
+      const todayDow = now.getDay(); // 0=Sun..6=Sat, matches the frontend's day chips
 
       const stmt = db.prepare(`
-        SELECT s.id as scheduleId, s.time, s.dosage, s.timing, s.comments, m.id as medicineId, m.name as medicineName, m.compartment,
+        SELECT s.id as scheduleId, s.time, s.dosage, s.timing, s.comments, s.days, m.id as medicineId, m.name as medicineName, m.compartment,
                COALESCE(dl.taken, 0) as taken
         FROM schedules s
         JOIN medicines m ON s.medicine_id = m.id
@@ -282,14 +318,24 @@ async function startServer() {
       while (stmt.step()) rows.push(stmt.getAsObject());
       stmt.free();
 
-      const result = rows.map(r => {
-        let state = 'upcoming';
-        if (r.taken) state = 'taken';
-        else if (r.time < currentTime) state = 'missed';
-        else state = 'due';
-
-        return { ...r, state, taken: Boolean(r.taken) };
-      });
+      const result = rows
+        .filter(r => {
+          let days = r.days;
+          try { days = JSON.parse(r.days); } catch (e) { /* leave as-is, e.g. 'daily' */ }
+          if (days === 'daily' || !days) return true;
+          return Array.isArray(days) && days.includes(todayDow);
+        })
+        .map(r => {
+          const taken = Boolean(r.taken);
+          let state = 'upcoming';
+          if (!taken) {
+            const due = timeToMinutes(r.time);
+            if (nowMinutes >= due && nowMinutes <= due + GRACE_MINUTES) state = 'due';
+            else if (nowMinutes > due + GRACE_MINUTES) state = 'missed';
+          }
+          const { days, ...rest } = r;
+          return { ...rest, state: taken ? 'taken' : state, taken };
+        });
 
       res.json(result);
     } catch (err) {
