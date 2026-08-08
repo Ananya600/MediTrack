@@ -96,6 +96,8 @@
     border-radius:12px; font-size:13px; font-weight:700; margin-bottom:20px; border:1px solid #B8E4CE;
   }
   .auth-toast.show{display:block;}
+  .auth-toast.error{background:var(--pink-dim); color:#B5596B; border-color:#F3C4CE;}
+  .field-hint{font-size:11.5px; color:var(--text-faint); margin-top:5px;}
 
   .field{margin-bottom:16px;}
   .field label{ display:block; font-size:12.5px; font-weight:700; color:var(--text-dim); margin-bottom:7px; }
@@ -293,7 +295,6 @@
       <p class="sub" id="loginSub">Enter credentials to access the pill box console.</p>
       
       <div class="auth-toast" id="authToast">Account created successfully! Please sign in.</div>
-      <div class="auth-toast" id="authError" style="background:var(--pink-dim); color:#B5596B; border-color:#F3C3CE;">Something went wrong.</div>
 
       <form id="authForm">
         <div class="field" id="registerExtraFields" style="display:none;">
@@ -307,6 +308,7 @@
         <div class="field">
           <label for="password">Password</label>
           <input type="password" id="password" placeholder="Password">
+          <div class="field-hint" id="passwordHint" style="display:none;">At least 6 characters.</div>
         </div>
         <button type="submit" class="btn-primary" id="loginSubmitBtn">Sign in</button>
       </form>
@@ -559,8 +561,14 @@
 <script>
 (function(){
   var API_BASE = '/api';
-  var deviceApiKey = '';
-  var authToken = localStorage.getItem('meditrack_token') || '';
+  // The logged-in account's OWN key — stable per account, not regenerated
+  // on every deploy the way a single shared secret could be. This is what
+  // every dashboard request authenticates with now.
+  var sessionApiKey = '';
+  var currentUser = null;
+  // The ESP32's separate device key, only ever used to display it on the
+  // Device Setup page — unrelated to which human is logged in.
+  var pillboxDeviceKey = '';
 
   var field = document.getElementById('dotField');
   for(var i=0; i<72; i++){
@@ -582,7 +590,7 @@
     options = options || {};
     var headers = options.headers || {};
     headers['Content-Type'] = 'application/json';
-    if (authToken) headers['Authorization'] = 'Bearer ' + authToken;
+    if (sessionApiKey) headers['x-api-key'] = sessionApiKey;
 
     try {
       const res = await fetch(API_BASE + path, {
@@ -602,25 +610,34 @@
     }
   }
 
-  async function loadDeviceKey(){
-    // This account's permanent pillbox API key. It never changes once
-    // created at registration, so the ESP32 stays paired across deploys.
-    const data = await apiFetch('/device-key');
-    if (data && data.apiKey) {
-      deviceApiKey = data.apiKey;
-      var el = document.getElementById('deviceApiKeyValue');
-      if (el) el.textContent = deviceApiKey;
-      return true;
+  // Register/login happen before we have a key to send, same reasoning
+  // the old loadDeviceKey() comment had — so these are plain fetches, and
+  // unlike apiFetch they THROW with the server's real message instead of
+  // swallowing it, since the login form needs to show the actual reason
+  // ("username already taken", "invalid password") rather than a generic
+  // failure.
+  async function authRequest(path, body){
+    const res = await fetch(API_BASE + path, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    });
+    const data = await res.json().catch(function(){ return null; });
+    if (!res.ok) {
+      throw new Error((data && data.error) ? data.error : 'Request failed (HTTP ' + res.status + ')');
     }
-    return false;
+    return data;
   }
 
-  function forceLogout(){
-    authToken = '';
-    localStorage.removeItem('meditrack_token');
-    dashboard.classList.remove('active');
-    loginScreen.style.display = 'grid';
-    setAuthMode('login');
+  async function loadDeviceKey(){
+    // Now behind requireApiKey like everything else — only reachable once
+    // sessionApiKey is set, i.e. after a real login.
+    var data = await apiFetch('/device-key');
+    if (data && data.apiKey) {
+      pillboxDeviceKey = data.apiKey;
+      var el = document.getElementById('deviceApiKeyValue');
+      if (el) el.textContent = pillboxDeviceKey;
+    }
   }
 
   var authForm = document.getElementById('authForm');
@@ -632,97 +649,97 @@
   function setAuthMode(mode){
     authMode = mode;
     authToast.classList.remove('show');
+    authToast.classList.remove('error');
     if(authMode === 'register'){
       document.getElementById('loginTitle').textContent = 'Create Account';
       document.getElementById('loginSub').textContent = 'Set up access for the pill box console.';
       document.getElementById('registerExtraFields').style.display = 'block';
+      document.getElementById('passwordHint').style.display = 'block';
       document.getElementById('loginSubmitBtn').textContent = 'Create Account';
       document.getElementById('authModeToggle').textContent = 'Already have an account? Sign in';
     } else {
       document.getElementById('loginTitle').textContent = 'Sign in';
       document.getElementById('loginSub').textContent = 'Enter credentials to access the pill box console.';
       document.getElementById('registerExtraFields').style.display = 'none';
+      document.getElementById('passwordHint').style.display = 'none';
       document.getElementById('loginSubmitBtn').textContent = 'Sign in';
       document.getElementById('authModeToggle').textContent = 'Need to create an account?';
     }
+  }
+
+  function showAuthError(message){
+    authToast.textContent = message;
+    authToast.classList.add('show');
+    authToast.classList.add('error');
+  }
+
+  async function enterDashboard(session){
+    sessionApiKey = session.apiKey;
+    currentUser = session.user;
+    document.getElementById('userNameLabel').textContent = currentUser.fullName;
+    document.getElementById('userAvatar').textContent = currentUser.fullName.charAt(0).toUpperCase();
+    document.getElementById('username').value = '';
+    document.getElementById('password').value = '';
+    loginScreen.style.display = 'none';
+    dashboard.classList.add('active');
+    await loadDeviceKey();
+    await refreshAll();
   }
 
   document.getElementById('authModeToggle').addEventListener('click', function(){
     setAuthMode(authMode === 'login' ? 'register' : 'login');
   });
 
-  var authError = document.getElementById('authError');
-
   authForm.addEventListener('submit', async function(e){
     e.preventDefault();
-    var userVal = document.getElementById('username').value.trim();
-    var passVal = document.getElementById('password').value;
-    if (authError) authError.classList.remove('show');
+    authToast.classList.remove('show');
+    authToast.classList.remove('error');
 
-    if(!userVal || !passVal){
-      if (authError) { authError.textContent = 'Username and password are required.'; authError.classList.add('show'); }
-      return;
-    }
+    var username = document.getElementById('username').value.trim();
+    var password = document.getElementById('password').value;
+    var submitBtn = document.getElementById('loginSubmitBtn');
 
     if(authMode === 'register'){
-      var fullNameVal = document.getElementById('fullName').value.trim();
-      const res = await fetch(API_BASE + '/auth/register', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ fullName: fullNameVal, username: userVal, password: passVal })
-      });
-      const data = await res.json();
-      if(!res.ok){
-        if (authError) { authError.textContent = data.error || 'Registration failed.'; authError.classList.add('show'); }
-        return;
+      var fullName = document.getElementById('fullName').value.trim();
+      if(!fullName){ showAuthError('Full name is required.'); return; }
+      if(!username){ showAuthError('Username is required.'); return; }
+      if(password.length < 6){ showAuthError('Password must be at least 6 characters.'); return; }
+
+      submitBtn.disabled = true;
+      try{
+        var session = await authRequest('/auth/register', { fullName: fullName, username: username, password: password });
+        await enterDashboard(session);
+      } catch(err){
+        showAuthError(err.message);
+      } finally {
+        submitBtn.disabled = false;
       }
-      setAuthMode('login');
-      authToast.classList.add('show');
-      document.getElementById('password').value = '';
     } else {
-      const res = await fetch(API_BASE + '/auth/login', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ username: userVal, password: passVal })
-      });
-      const data = await res.json();
-      if(!res.ok){
-        if (authError) { authError.textContent = data.error || 'Sign in failed.'; authError.classList.add('show'); }
-        return;
+      if(!username || !password){ showAuthError('Enter both a username and password.'); return; }
+
+      submitBtn.disabled = true;
+      try{
+        var session = await authRequest('/auth/login', { username: username, password: password });
+        await enterDashboard(session);
+      } catch(err){
+        // Never falls through to the dashboard on a real failure — this is
+        // the whole point: only credentials that were actually created
+        // via Register are ever accepted here.
+        showAuthError(err.message);
+      } finally {
+        submitBtn.disabled = false;
       }
-
-      authToken = data.token;
-      localStorage.setItem('meditrack_token', authToken);
-
-      var displayName = data.fullName || userVal;
-      document.getElementById('userNameLabel').textContent = displayName;
-      document.getElementById('userAvatar').textContent = displayName.charAt(0).toUpperCase();
-
-      loginScreen.style.display = 'none';
-      dashboard.classList.add('active');
-      await loadDeviceKey();
-      await refreshAll();
     }
   });
 
   document.getElementById('logoutBtn').addEventListener('click', function(){
-    authToken = '';
-    localStorage.removeItem('meditrack_token');
+    sessionApiKey = '';
+    currentUser = null;
+    pillboxDeviceKey = '';
     dashboard.classList.remove('active');
     loginScreen.style.display = 'grid';
     setAuthMode('login');
   });
-
-  // If a token is already saved from a previous session, skip the login
-  // screen and go straight to the dashboard.
-  (async function tryResumeSession(){
-    if (!authToken) return;
-    loginScreen.style.display = 'none';
-    dashboard.classList.add('active');
-    var ok = await loadDeviceKey();
-    if (!ok) { forceLogout(); return; }
-    await refreshAll();
-  })();
 
   var navItems = document.querySelectorAll('.nav-item');
   var pages = document.querySelectorAll('.page');
@@ -756,8 +773,8 @@
   });
 
   document.getElementById('copyDeviceKeyBtn').addEventListener('click', function(){
-    if(!deviceApiKey) return;
-    navigator.clipboard.writeText(deviceApiKey).then(function(){
+    if(!pillboxDeviceKey) return;
+    navigator.clipboard.writeText(pillboxDeviceKey).then(function(){
       var btn = document.getElementById('copyDeviceKeyBtn');
       var original = btn.textContent;
       btn.textContent = 'Copied!';
