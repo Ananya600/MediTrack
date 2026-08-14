@@ -83,8 +83,6 @@ web dashboard always reflects what the physical device has actually done.
   for network provisioning
 - RTC module (real-time clock) for schedule timing
 - Servo motor(s) driving the compartment-select mechanism
-- Vibration motor for tactile guidance
-- Weight sensor for dose-confirmation
 - Prototype enclosure: cardboard + card-stock compartment wheel (proof of
   concept housing, ahead of a 3D-printed/molded enclosure)
 - A `python_bridge` component connecting the microcontroller to the
@@ -96,10 +94,6 @@ web dashboard always reflects what the physical device has actually done.
   Render Web Service: [meditrack-6m2m.onrender.com](https://meditrack-6m2m.onrender.com/)
 
 ## Repository Structure
-
-> Adjust this section to match your actual folder names if they differ —
-> this reflects the current project layout.
-
 ```
 MediTrack/
 ├── Hardware/              # firmware, wiring diagrams, BOM
