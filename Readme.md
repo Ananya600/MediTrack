@@ -189,8 +189,8 @@ finalized.
 - [x] Dashboard UI (Overview, Track, Manage, Restock, Missed, History)
 - [x] Persistent backend (Express + JSON file)
 - [x] Deployed to Render
-- [ ] Persistent disk on Render for `db.json` (prevents data loss on redeploy)
-- [ ] Firmware ↔ backend sync over WiFi in the field (beyond bench testing)
+- [x] Persistent disk on Render for `db.json` (prevents data loss on redeploy)
+- [x] Firmware ↔ backend sync over WiFi in the field (beyond bench testing)
 - [ ] Move from cardboard prototype to a 3D-printed/molded enclosure
 - [ ] Camera module for refill/prescription verification (per original
       abstract)
