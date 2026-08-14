@@ -202,8 +202,3 @@ finalized.
 - K. Ananya Ramesh
 - Megha Baiju
 - Sivani Balagopal
-
-## License
-
-*(Add your chosen license here — e.g. MIT — or state "All rights reserved"
-if this is being kept private for the hackathon submission.)*
