@@ -181,12 +181,8 @@ finalized.
 
 - Prototype compartment wheel + servo + breadboard wiring (bench test)
 - WiFiManager captive portal (`MediTrack-Setup`) for network provisioning
-- Dashboard codebase running in the dev environment
-- 🎥 Demo video: see `/media` (or wherever the walkthrough video is placed
-  in this repo)
 
-*(Add the actual image files to a `/screenshots` folder and reference them
-here with `![alt text](screenshots/filename.jpg)` once they're committed.)*
+- Dashboard codebase running in the dev environment
 
 ## Roadmap
 
