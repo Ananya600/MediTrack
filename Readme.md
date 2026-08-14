@@ -93,23 +93,6 @@ web dashboard always reflects what the physical device has actually done.
 - **Render** — the backend (and the dashboard it serves) is deployed as a
   Render Web Service: [meditrack-6m2m.onrender.com](https://meditrack-6m2m.onrender.com/)
 
-## Repository Structure
-```
-MediTrack/
-├── Hardware/              # firmware, wiring diagrams, BOM
-├── Software/
-│   └── meditracker-backend/
-│       ├── server.js       # Express API
-│       ├── db.js           # JSON-file persistence helper
-│       ├── db.json          # data store (git-ignored — created on first run)
-│       ├── package.json
-│       └── public/
-│           ├── index.html   # dashboard UI
-│           └── script.js    # dashboard logic (calls the API)
-├── python_bridge/          # serial <-> HTTP bridge used during dev/testing
-└── README.md
-```
-
 ## Getting Started
 
 ### Software (Dashboard + API)
