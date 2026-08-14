@@ -1,4 +1,4 @@
-# MediTrack — Smart Pillbox for the Visually Impaired
+# MediTrack — Smart Pillbox
 
 **Team Pill-Pal** · GIRLATHON 4.0 · Track: Hardware · Topic: FemTech and Healthcare Innovation
 
