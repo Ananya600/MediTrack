@@ -35,10 +35,8 @@
 
 MediTrack has two halves that talk to each other:
 
-1. **The pillbox (hardware)** — an RTC-timed, servo-driven compartment
-   wheel that physically opens the right slot at the right time, with a
-   vibration motor to guide the user by touch and a weight sensor to
-   confirm the dose was removed. A microcontroller running **WiFiManager**
+1. **The pillbox (hardware)** — time driven, servo-driven compartment
+   wheel that physically opens the right slot at the right time, with voice assisting to guide the user to take correct medicines. A microcontroller running **WiFiManager**
    handles first-time WiFi setup via a captive portal ("MediTrack-Setup"),
    so no hardcoded WiFi credentials are needed in the firmware.
 2. **The dashboard (software)** — a web app for the patient/caregiver to
@@ -81,13 +79,12 @@ web dashboard always reflects what the physical device has actually done.
 **Hardware**
 - Microcontroller with WiFi (ESP32/ESP8266-class) running **WiFiManager**
   for network provisioning
-- RTC module (real-time clock) for schedule timing
-- Servo motor(s) driving the compartment-select mechanism
+- NTP for syncing correct time
+- Stepper motor to rotate the correct compartment to the open door
+- Servo motor to open and close the door mechanism
 - Prototype enclosure: cardboard + card-stock compartment wheel (proof of
   concept housing, ahead of a 3D-printed/molded enclosure)
-- A `python_bridge` component connecting the microcontroller to the
-  backend/local dev environment during development and testing (serial
-  ↔ HTTP bridging) — see [Hardware](#hardware-pillbox) below
+
 
 **Deployment**
 - **Render** — the backend (and the dashboard it serves) is deployed as a
@@ -139,11 +136,13 @@ updated — so nothing added through the dashboard is lost between deploys.
 ### Hardware (Pillbox)
 
 **Components used in the current prototype:**
-- Microcontroller (WiFi-capable), breadboard, jumper wires
-- 1× micro servo (compartment rotation)
-- RTC module
-- Vibration motor
-- Weight sensor
+- Microcontroller- ESP32 (WiFi-capable), breadboard, jumper wires
+- 1× micro servo SG90
+- 1x stepper motor
+- 1x motor driver module
+- IR sensor
+- max98357a i2s amplifier
+- 8 ohm speaker
 - Cardboard/card-stock compartment wheel and housing (prototype enclosure)
 
 **First-time setup:**
@@ -157,12 +156,6 @@ updated — so nothing added through the dashboard is lost between deploys.
    password, and save. The device will reboot and connect to that network.
 5. Once connected, the device syncs its schedule from the backend
    (`API_BASE` configured in firmware) and begins operating on its own.
-
-**`python_bridge`:** during development, this script mediates between the
-microcontroller (over serial) and the backend API (over HTTP) — useful for
-bench-testing dispense/weight-sensor logic without needing full WiFi
-round-trips. See that folder's own instructions for exact usage once
-finalized.
 
 ## API Reference
 
