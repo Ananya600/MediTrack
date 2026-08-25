@@ -7,8 +7,8 @@
 #include <WiFiManager.h>  // https://github.com/tzapu/WiFiManager
 #include <Preferences.h>  // ESP32 Non-Volatile Flash Storage
 #include <time.h>         // Built-in ESP32 Time Library
-#include <Audio.h>  
-#include <LittleFS.h>      // ESP32-audioI2S by schreibfaul1
+#include <Audio.h>        // ESP32-audioI2S by schreibfaul1
+#include <LittleFS.h>     
 #include <set>
 
 // ================= CONFIGURATION & CONSTANTS =================
@@ -49,7 +49,6 @@ const unsigned long POLL_INTERVAL = 15000;
 bool shouldSaveConfig = false;
 
 std::set<String> dispensedIds;
-std::set<String> missedLoggedIds;  
 String lastResetDate = "";
 
 void saveConfigCallback() {
@@ -301,7 +300,6 @@ void resetDailyTrackingIfNewDay() {
   String today = String(dateBuf);
   if (today != lastResetDate) {
     dispensedIds.clear();
-    missedLoggedIds.clear();  
     lastResetDate = today;
   }
 }
@@ -333,7 +331,7 @@ void releaseMotor() {
   digitalWrite(IN4, LOW);
 }
 
-void logDoseToBackend(String scheduleId, bool missed = false) {
+void logDoseToBackend(String scheduleId) {
   if (WiFi.status() != WL_CONNECTED || strlen(deviceApiKey) == 0 || scheduleId.length() == 0 || scheduleId == "null") {
     Serial.println("Skipping logDoseToBackend due to invalid parameters or lack of WiFi.");
     return;
@@ -345,8 +343,7 @@ void logDoseToBackend(String scheduleId, bool missed = false) {
     client.setTimeout(60); 
 
     HTTPClient http;
-    String actionEndpoint = missed ? "/missed" : "/taken";
-    String url = String(SERVER_BASE_URL) + "/api/doses/" + scheduleId + actionEndpoint;
+    String url = String(SERVER_BASE_URL) + "/api/doses/" + scheduleId + "/taken";
     
     http.begin(client, url);
     http.addHeader("Content-Type", "application/json");
@@ -369,9 +366,10 @@ void logDoseToBackend(String scheduleId, bool missed = false) {
 }
 
 void executeDispenseCycle(int compartmentNum, String scheduleId, String medName, String dosage,
-                           String compartmentLabel, int scheduledMin, String nextDoseAnnouncement) {
+                          String compartmentLabel, int scheduledMin, String nextDoseAnnouncement) {
   int degree = degreeOfRotation[compartmentNum];
   int steps = (degree * StepsPerRevolution) / 360;
+  myServo.write(0);
 
   Serial.printf("Rotating stepper to compartment %d (%d degrees)...\n", compartmentNum, degree);
   myStepper.step(steps);
@@ -387,6 +385,8 @@ void executeDispenseCycle(int compartmentNum, String scheduleId, String medName,
   speakText(announcement);
   
   Serial.println("TTS done, opening servo now");
+
+  delay(50);
   myServo.write(90);
   Serial.println("Servo opened, waiting for hand...");
 
@@ -400,14 +400,14 @@ void executeDispenseCycle(int compartmentNum, String scheduleId, String medName,
     Serial.println("Hand detected, closing servo...");
     delay(5000);
     myServo.write(0);
-    delay(1000);
+    delay(5000);
   }
 
   myStepper.step(-steps);
   delay(1000);
   releaseMotor();
 
-  logDoseToBackend(scheduleId, false);
+  logDoseToBackend(scheduleId);
 }
 
 void pollPendingDoses() {
@@ -494,14 +494,6 @@ void pollPendingDoses() {
               return; 
             }
           }
-          else if (timeDiff > DISPENSE_WINDOW_MINUTES) {
-            if (!missedLoggedIds.count(scheduleId)) {
-              missedLoggedIds.insert(scheduleId);
-              Serial.printf("Dose missed (>%d mins past schedule: %s). Marking missed on backend...\n", 
-                            DISPENSE_WINDOW_MINUTES, scheduleTimeStr.c_str());
-              logDoseToBackend(scheduleId, true);
-            }
-          }
         }
       }
     } else {
@@ -520,20 +512,30 @@ void setup() {
   Serial.begin(115200);
 
   myStepper.setSpeed(10);
-  myServo.attach(SERVO_PIN);
-  myServo.write(0);
-  pinMode(IR_PIN, INPUT);
+  pinMode(IR_PIN, INPUT_PULLUP);
 
   setupWiFiAndPortal();
 
+  // Initialize I2S Audio FIRST
   audio.setPinout(I2S_BCLK, I2S_LRC, I2S_DOUT);
   audio.setVolume(18);
+
+  // Initialize Servo AFTER Audio setup
+  ESP32PWM::allocateTimer(0);
+  ESP32PWM::allocateTimer(1);
+  ESP32PWM::allocateTimer(2);
+  ESP32PWM::allocateTimer(3);
+  
+  myServo.setPeriodHertz(50);             
+  myServo.attach(SERVO_PIN, 1000, 2000);   
+  myServo.write(0);
 
   if (!LittleFS.begin(true)) {
     Serial.println("LittleFS Mount Failed. Formatted partition dynamically.");
   } else {
     Serial.println("LittleFS Mounted Successfully.");
   }
+  myServo.write(0);
 }
 
 void loop() {
