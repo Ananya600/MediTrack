@@ -4,17 +4,16 @@
 #include <ArduinoJson.h>
 #include <Stepper.h>
 #include <ESP32Servo.h>
-#include <WiFiManager.h>  // https://github.com/tzapu/WiFiManager
-#include <Preferences.h>  // ESP32 Non-Volatile Flash Storage
-#include <time.h>         // Built-in ESP32 Time Library
-#include <Audio.h>        // ESP32-audioI2S by schreibfaul1
-#include <LittleFS.h>    
+#include <WiFiManager.h>
+#include <Preferences.h>
+#include <time.h>
+#include <Audio.h>
+#include <LittleFS.h>
 #include <set>
 
 // ================= CONFIGURATION & CONSTANTS =================
 const char* SERVER_BASE_URL = "https://meditrack-6m2m.onrender.com"; 
-
-const int DISPENSE_WINDOW_MINUTES = 30; // Active window set to 30 mins
+const int DISPENSE_WINDOW_MINUTES = 30;
 
 // Hardware Pins
 const int StepsPerRevolution = 2048;
@@ -26,7 +25,6 @@ static const int IR_PIN      = 27;
 #define IN3 5
 #define IN4 17
 
-// I2S pins for TTS audio
 #define I2S_DOUT 32
 #define I2S_BCLK 33
 #define I2S_LRC  25
@@ -40,34 +38,29 @@ Preferences preferences;
 Audio audio;             
 
 char deviceApiKey[64] = ""; 
-
 const int degreeOfRotation[9] = {0, 0, 45, 90, 135, 180, -135, -90, -45};
 
 unsigned long lastPollTime = 0;
 const unsigned long POLL_INTERVAL = 15000; 
 
-const unsigned long HAND_WAIT_REMINDER_INTERVAL = 20000;  // remind every 20s while waiting
-const unsigned long HAND_WAIT_TIMEOUT           = 180000; // give up after 3 minutes
+const unsigned long HAND_WAIT_REMINDER_INTERVAL = 20000; 
+const unsigned long HAND_WAIT_TIMEOUT           = 180000;
 
 bool shouldSaveConfig = false;
-
-// Interrupt-driven IR tracking flag
 volatile bool g_handDetectedDuringCycle = false;
 
 std::set<String> dispensedIds;
 String lastResetDate = "";
 
-// Hardware Interrupt Service Routine for IR Sensor
 void IRAM_ATTR irSensorISR() {
   g_handDetectedDuringCycle = true;
 }
 
 void saveConfigCallback() {
-  Serial.println("Should save config triggered");
   shouldSaveConfig = true;
 }
 
-// ================= NVS PERSISTENCE FOR DISPENSED IDS =================
+// ================= NVS PERSISTENCE =================
 
 void loadDispensedIdsFromNVS() {
   preferences.begin("meditrack_doses", true);
@@ -106,7 +99,6 @@ void saveDispensedIdsToNVS() {
 
 void syncTimeIST() {
   configTzTime("IST-5:30", "pool.ntp.org", "time.nist.gov");
-  
   struct tm timeinfo;
   Serial.print("Syncing internal clock with NTP (IST)");
   int attempts = 0;
@@ -116,9 +108,8 @@ void syncTimeIST() {
     attempts++;
   }
   Serial.println();
-
   if (attempts < 20) {
-    Serial.println(&timeinfo, "Time synchronized successfully! Current IST: %H:%M:%S");
+    Serial.println(&timeinfo, "Time synchronized! Current IST: %H:%M:%S");
   } else {
     Serial.println("Failed to obtain NTP time.");
   }
@@ -134,9 +125,7 @@ int timeStringToMinutes(String timeStr) {
 
 int getCurrentTimeInMinutes() {
   struct tm timeinfo;
-  if (!getLocalTime(&timeinfo)) {
-    return -1;
-  }
+  if (!getLocalTime(&timeinfo)) return -1;
   return (timeinfo.tm_hour * 60) + timeinfo.tm_min;
 }
 
@@ -153,7 +142,7 @@ String formatMinutesToClock(int totalMinutes) {
   return String(buf);
 }
 
-// ================= SETUP & PROVISIONING =================
+// ================= PROVISIONING =================
 
 void setupWiFiAndPortal() {
   preferences.begin("meditrack", false);
@@ -162,16 +151,12 @@ void setupWiFiAndPortal() {
 
   WiFiManager wm;
   wm.setSaveConfigCallback(saveConfigCallback);
-
   WiFiManagerParameter customApiKey("api_key", "MediTrack Device API Key", deviceApiKey, 64);
   wm.addParameter(&customApiKey);
-
   wm.setConfigPortalTimeout(180);
 
-  Serial.println("Starting Wi-Fi / Provisioning Portal...");
-
   if (!wm.autoConnect("MediTrack-Setup")) {
-    Serial.println("Failed to connect or hit portal timeout. Restarting...");
+    Serial.println("Failed to connect or timeout. Restarting...");
     delay(3000);
     ESP.restart();
   }
@@ -179,36 +164,27 @@ void setupWiFiAndPortal() {
   if (shouldSaveConfig) {
     strcpy(deviceApiKey, customApiKey.getValue());
     preferences.putString("apiKey", deviceApiKey);
-    Serial.println("New API Key saved to Flash Memory!");
   }
-
   preferences.end();
 
-  Serial.println("\nSuccessfully Connected to Wi-Fi!");
-  Serial.print("Local IP: ");
-  Serial.println(WiFi.localIP());
-  Serial.print("Active Device API Key: ");
-  Serial.println(deviceApiKey);
-
+  Serial.println("Connected to Wi-Fi!");
   syncTimeIST();
 }
 
-// ================= TEXT-TO-SPEECH (I2S + Google Translate TTS) =================
+// ================= TTS AUDIO WITH TIMEOUT GUARD =================
 
 void waitForAudioToFinish() {
   unsigned long started = millis();
   while (millis() - started < 300) { 
     audio.loop(); 
     yield();
-    delay(1); 
   }
   unsigned long ttsStart = millis();
   while (audio.isRunning()) {
     audio.loop();
     yield();
-    delay(1);
-    if (millis() - ttsStart > 20000) { 
-      Serial.println("TTS timeout — aborting audio, continuing dispense");
+    if (millis() - ttsStart > 8000) { // Reduced to 8-sec hard guard
+      Serial.println("TTS timeout — skipping audio to avoid hardware hang.");
       audio.stopSong();
       break;
     }
@@ -220,20 +196,15 @@ bool fetchTTSToFile(String text, const char* path) {
   text.trim();
   if (text.length() == 0) return false;
 
-  // Cleanup file system before fetching new chunk to prevent LittleFS block allocation errors
-  if (LittleFS.exists(path)) {
-    LittleFS.remove(path);
-  }
+  if (LittleFS.exists(path)) LittleFS.remove(path);
 
   String encoded = "";
   char buf[4];
   for (size_t i = 0; i < text.length(); i++) {
     char c = text.charAt(i);
-    if (isalnum((unsigned char)c)) {
-      encoded += c;
-    } else if (c == ' ') {
-      encoded += "%20";
-    } else {
+    if (isalnum((unsigned char)c)) encoded += c;
+    else if (c == ' ') encoded += "%20";
+    else {
       snprintf(buf, sizeof(buf), "%%%02X", (unsigned char)c);
       encoded += buf;
     }
@@ -243,18 +214,15 @@ bool fetchTTSToFile(String text, const char* path) {
 
   WiFiClientSecure client;
   client.setInsecure();
-  client.setTimeout(60);
+  client.setTimeout(5); // Non-blocking fast timeout
 
   HTTPClient http;
   http.begin(client, url);
   http.addHeader("User-Agent", "Mozilla/5.0");
-  http.setTimeout(60000);
+  http.setTimeout(5000);
 
   int httpCode = http.GET();
-  Serial.printf("TTS fetch HTTP code: %d, content-length: %d\n", httpCode, http.getSize());
-
   if (httpCode != HTTP_CODE_OK) {
-    Serial.printf("TTS fetch failed, HTTP %d\n", httpCode);
     http.end();
     client.stop();
     return false;
@@ -262,7 +230,6 @@ bool fetchTTSToFile(String text, const char* path) {
 
   File f = LittleFS.open(path, "w");
   if (!f) {
-    Serial.println("Failed to open file for writing - Re-formatting LittleFS safety trigger");
     http.end();
     client.stop();
     return false;
@@ -271,17 +238,9 @@ bool fetchTTSToFile(String text, const char* path) {
   int totalWritten = http.writeToStream(&f);
   f.flush();
   f.close();
-
   http.end();
   client.stop();   
 
-  if (totalWritten <= 0) {
-    Serial.printf("TTS write failed with error code: %d\n", totalWritten);
-    if (LittleFS.exists(path)) LittleFS.remove(path); // Clean corrupted write attempt
-    return false;
-  }
-
-  Serial.printf("TTS file written: %d bytes\n", totalWritten);
   return totalWritten > 500;
 }
 
@@ -312,7 +271,7 @@ void speakText(String text) {
         audio.connecttoFS(LittleFS, path); 
         waitForAudioToFinish();
       } else {
-        Serial.println("TTS chunk fetch failed, skipping audio playback.");
+        Serial.println("TTS fetch failed, falling back to silent operation.");
       }
     }
     start = end;
@@ -343,9 +302,7 @@ String getNextDoseTimeAnnouncement(JsonArray doses, int afterMinutes, String exc
     }
   }
 
-  if (bestMin == -1) {
-    return "no more medicines scheduled for today";
-  }
+  if (bestMin == -1) return "no more medicines scheduled for today";
   return formatMinutesToClock(bestMin);
 }
 
@@ -362,12 +319,11 @@ void resetDailyTrackingIfNewDay() {
   }
 }
 
-// ================= HARDWARE & BACKEND LOGIC =================
+// ================= HARDWARE DRIVERS =================
 
 int parseCompartment(String label) {
   label.trim();
   label.toUpperCase();
-
   if (label == "A1") return 1;
   if (label == "A2") return 2;
   if (label == "A3") return 3;
@@ -390,37 +346,24 @@ void releaseMotor() {
 }
 
 void logDoseToBackend(String scheduleId) {
-  if (WiFi.status() != WL_CONNECTED || strlen(deviceApiKey) == 0 || scheduleId.length() == 0 || scheduleId == "null") {
-    Serial.println("Skipping logDoseToBackend due to invalid parameters or lack of WiFi.");
-    return;
-  }
+  if (WiFi.status() != WL_CONNECTED || strlen(deviceApiKey) == 0 || scheduleId.length() == 0 || scheduleId == "null") return;
 
-  for (int attempt = 0; attempt < 3; attempt++) {
-    WiFiClientSecure client;
-    client.setInsecure();
-    client.setTimeout(60); 
+  WiFiClientSecure client;
+  client.setInsecure();
+  client.setTimeout(10); 
 
-    HTTPClient http;
-    String url = String(SERVER_BASE_URL) + "/api/doses/" + scheduleId + "/taken";
-    
-    http.begin(client, url);
-    http.addHeader("Content-Type", "application/json");
-    http.addHeader("x-api-key", deviceApiKey);
-    http.setTimeout(30000);
+  HTTPClient http;
+  String url = String(SERVER_BASE_URL) + "/api/doses/" + scheduleId + "/taken";
+  
+  http.begin(client, url);
+  http.addHeader("Content-Type", "application/json");
+  http.addHeader("x-api-key", deviceApiKey);
+  http.setTimeout(10000);
 
-    int httpCode = http.POST("{}");
-    http.end();
-    client.stop();
-
-    if (httpCode > 0) {
-      Serial.printf("Logged dose status to server (HTTP %d)\n", httpCode);
-      return;  
-    }
-
-    Serial.printf("Attempt %d failed (HTTP %d), retrying...\n", attempt + 1, httpCode);
-    delay(1000);
-  }
-  Serial.println("All retries failed to log dose status.");
+  int httpCode = http.POST("{}");
+  http.end();
+  client.stop();
+  Serial.printf("Logged dose status to server (HTTP %d)\n", httpCode);
 }
 
 void executeDispenseCycle(int compartmentNum, String scheduleId, String medName, String dosage,
@@ -428,43 +371,39 @@ void executeDispenseCycle(int compartmentNum, String scheduleId, String medName,
   
   int degree = degreeOfRotation[compartmentNum];
   int steps = (degree * StepsPerRevolution) / 360;
+
+  Serial.println("[CYCLE START] Moving motor first...");
   myServo.write(0);
 
-  Serial.printf("Rotating stepper to compartment %d (%d degrees)...\n", compartmentNum, degree);
+  // MOVE STEPPER BEFORE SPEECH (Fixes blocking audio hang)
+  Serial.printf("Rotating stepper to compartment %d (%d steps)...\n", compartmentNum, steps);
   myStepper.step(steps);
   releaseMotor(); 
-  delay(500);
+  delay(300);
 
+  // Speak announcement safely after movement
   String currentTimeStr = formatMinutesToClock(getCurrentTimeInMinutes());
   String announcement = medName + " is available at compartment " + compartmentLabel +
-                         ". Please take " + dosage + ". " +
-                         "The current time is " + currentTimeStr + ", and the next medicine is at " +
-                         nextDoseAnnouncement + ".";
+                         ". Please take " + dosage + ".";
 
   speakText(announcement);
-  speakText("Compartment is opening. Please reach in to take your medicine.");
 
-  // Open the door
+  // Open door
+  Serial.println("Opening servo door...");
   myServo.write(180);
-  delay(1000); // Give servo time to fully open and settle mechanically
+  delay(1000); 
 
-  // CRITICAL: Clear any false interrupts caused by motor movement or closed-state reflections
   g_handDetectedDuringCycle = false; 
-
-  Serial.println("Servo fully opened. Waiting for hand insertion...");
+  Serial.println("Waiting for hand detection...");
 
   unsigned long waitStart = millis();
   unsigned long lastReminder = millis();
   bool handConfirmed = false;
 
-  // Wait loop
   while (millis() - waitStart < HAND_WAIT_TIMEOUT) {
     yield();
 
-    // Only count as hand detection if sensor transitions/holds LOW long enough
     if (g_handDetectedDuringCycle || digitalRead(IR_PIN) == LOW) {
-      
-      // Debounce check: ensure hand stays present for 300ms continuously
       unsigned long detectStart = millis();
       bool steadyHand = true;
       while (millis() - detectStart < 300) {
@@ -480,42 +419,38 @@ void executeDispenseCycle(int compartmentNum, String scheduleId, String medName,
         Serial.println("Hand confirmed in compartment!");
         break;
       } else {
-        // Was just temporary noise/reflection spike
         g_handDetectedDuringCycle = false;
       }
     }
 
-    // Periodic Reminder
     if (millis() - lastReminder >= HAND_WAIT_REMINDER_INTERVAL) {
       lastReminder = millis();
-      Serial.println("Reminder: waiting for hand...");
       speakText("Still waiting. Please reach into compartment " + compartmentLabel + ".");
-      g_handDetectedDuringCycle = false; // clear audio-induced false triggers
+      g_handDetectedDuringCycle = false; 
     }
 
     delay(30);
   }
 
-  // Door Closing Sequence
   if (handConfirmed) {
-    speakText("Got it. Closing the compartment now.");
-    delay(1500); 
+    speakText("Got it. Closing compartment.");
+    delay(1000); 
     myServo.write(0);
     delay(1000);
-    speakText("Dose recorded. Have a good day.");
     logDoseToBackend(scheduleId);
   } else {
     Serial.println("Timed out waiting for hand.");
-    speakText("No hand detected. Closing compartment for safety.");
     myServo.write(0);
     delay(1000);
-    speakText("Dose was not confirmed as taken. Please check your schedule.");
+    speakText("No hand detected. Door closed.");
   }
 
-  // Return stepper home
+  // Return Home
+  Serial.println("Returning stepper to home position...");
   myStepper.step(-steps);
   releaseMotor(); 
-  delay(1000);
+  delay(500);
+  Serial.println("[CYCLE COMPLETE]");
 }
 
 void pollPendingDoses() {
@@ -524,20 +459,20 @@ void pollPendingDoses() {
 
   int currentMin = getCurrentTimeInMinutes();
   if (currentMin == -1) {
-    Serial.println("System time not set via NTP. Skipping dose check...");
+    Serial.println("System time not synced via NTP.");
     return;
   }
 
   WiFiClientSecure client;
   client.setInsecure();
-  client.setTimeout(60);
+  client.setTimeout(10);
 
   HTTPClient http;
   String url = String(SERVER_BASE_URL) + "/api/doses/today";
 
   http.begin(client, url);
   http.addHeader("x-api-key", deviceApiKey);
-  http.setTimeout(30000);
+  http.setTimeout(10000);
 
   int httpCode = http.GET();
 
@@ -567,23 +502,19 @@ void pollPendingDoses() {
             scheduleId = item["_id"].as<String>();
           }
 
-          if (scheduleId.length() == 0 || scheduleId == "null") {
-            Serial.println("Warning: Dose item missing valid scheduleId. Skipping.");
-            continue;
-          }
+          if (scheduleId.length() == 0 || scheduleId == "null") continue;
 
           int compartmentNum = parseCompartment(compStr);
           int timeDiff = currentMin - scheduledMin;
 
           if (timeDiff >= 0 && timeDiff <= DISPENSE_WINDOW_MINUTES) {
             if (compartmentNum >= 1 && compartmentNum <= 8) {
-              if (dispensedIds.count(scheduleId)) {
-                continue; 
-              }
+              if (dispensedIds.count(scheduleId)) continue; 
+              
               dispensedIds.insert(scheduleId); 
-              saveDispensedIdsToNVS(); // Persist to NVS flash memory
+              saveDispensedIdsToNVS();
 
-              Serial.printf("Dispensing compartment %d for scheduleId %s...\n", compartmentNum, scheduleId.c_str());
+              Serial.printf("\n>>> Match found! Target compartment: %d (%s)\n", compartmentNum, compStr.c_str());
 
               String nextDoseAnnouncement = getNextDoseTimeAnnouncement(array, currentMin, scheduleId);
 
@@ -605,11 +536,9 @@ void pollPendingDoses() {
           }
         }
       }
-    } else {
-      Serial.printf("JSON parse error: %s\n", error.c_str());
     }
   } else {
-    Serial.printf("HTTP GET request failed. Error code: %d\n", httpCode);
+    Serial.printf("HTTP GET Failed: %d\n", httpCode);
   }
   http.end();
   client.stop();
@@ -619,19 +548,24 @@ void pollPendingDoses() {
 
 void setup() {
   Serial.begin(115200);
+  delay(1000);
+  
+  preferences.begin("meditrack_doses", false);
+  preferences.clear();
+  preferences.end();
 
   myStepper.setSpeed(10);
+  releaseMotor();
+
   pinMode(IR_PIN, INPUT_PULLUP);
   attachInterrupt(digitalPinToInterrupt(IR_PIN), irSensorISR, FALLING);
 
   setupWiFiAndPortal();
   loadDispensedIdsFromNVS();
 
-  // Initialize I2S Audio FIRST
   audio.setPinout(I2S_BCLK, I2S_LRC, I2S_DOUT);
   audio.setVolume(18);
 
-  // Initialize Servo AFTER Audio setup
   ESP32PWM::allocateTimer(0);
   ESP32PWM::allocateTimer(1);
   ESP32PWM::allocateTimer(2);
@@ -642,11 +576,12 @@ void setup() {
   myServo.write(0);
 
   if (!LittleFS.begin(true)) {
-    Serial.println("LittleFS Mount Failed. Formatted partition dynamically.");
+    Serial.println("LittleFS Mount Failed.");
   } else {
-    Serial.println("LittleFS Mounted Successfully.");
+    Serial.println("LittleFS Mounted.");
   }
-  myServo.write(0);
+  
+  Serial.println("Ready. Polling server...");
 }
 
 void loop() {
