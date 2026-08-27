@@ -8,7 +8,7 @@
 #include <Preferences.h>  // ESP32 Non-Volatile Flash Storage
 #include <time.h>         // Built-in ESP32 Time Library
 #include <Audio.h>        // ESP32-audioI2S by schreibfaul1
-#include <LittleFS.h>     
+#include <LittleFS.h>    
 #include <set>
 
 // ================= CONFIGURATION & CONSTANTS =================
@@ -46,14 +46,60 @@ const int degreeOfRotation[9] = {0, 0, 45, 90, 135, 180, -135, -90, -45};
 unsigned long lastPollTime = 0;
 const unsigned long POLL_INTERVAL = 15000; 
 
+const unsigned long HAND_WAIT_REMINDER_INTERVAL = 20000;  // remind every 20s while waiting
+const unsigned long HAND_WAIT_TIMEOUT           = 180000; // give up after 3 minutes
+
 bool shouldSaveConfig = false;
+
+// Interrupt-driven IR tracking flag
+volatile bool g_handDetectedDuringCycle = false;
 
 std::set<String> dispensedIds;
 String lastResetDate = "";
 
+// Hardware Interrupt Service Routine for IR Sensor
+void IRAM_ATTR irSensorISR() {
+  g_handDetectedDuringCycle = true;
+}
+
 void saveConfigCallback() {
   Serial.println("Should save config triggered");
   shouldSaveConfig = true;
+}
+
+// ================= NVS PERSISTENCE FOR DISPENSED IDS =================
+
+void loadDispensedIdsFromNVS() {
+  preferences.begin("meditrack_doses", true);
+  String storedCsv = preferences.getString("dispensed", "");
+  lastResetDate = preferences.getString("reset_date", "");
+  preferences.end();
+
+  dispensedIds.clear();
+  int start = 0;
+  int end = storedCsv.indexOf(',');
+  while (end != -1) {
+    String id = storedCsv.substring(start, end);
+    if (id.length() > 0) dispensedIds.insert(id);
+    start = end + 1;
+    end = storedCsv.indexOf(',', start);
+  }
+  if (start < (int)storedCsv.length()) {
+    String id = storedCsv.substring(start);
+    if (id.length() > 0) dispensedIds.insert(id);
+  }
+}
+
+void saveDispensedIdsToNVS() {
+  String csv = "";
+  for (const auto& id : dispensedIds) {
+    if (csv.length() > 0) csv += ",";
+    csv += id;
+  }
+  preferences.begin("meditrack_doses", false);
+  preferences.putString("dispensed", csv);
+  preferences.putString("reset_date", lastResetDate);
+  preferences.end();
 }
 
 // ================= TIME UTILITIES =================
@@ -174,6 +220,11 @@ bool fetchTTSToFile(String text, const char* path) {
   text.trim();
   if (text.length() == 0) return false;
 
+  // Cleanup file system before fetching new chunk to prevent LittleFS block allocation errors
+  if (LittleFS.exists(path)) {
+    LittleFS.remove(path);
+  }
+
   String encoded = "";
   char buf[4];
   for (size_t i = 0; i < text.length(); i++) {
@@ -209,22 +260,28 @@ bool fetchTTSToFile(String text, const char* path) {
     return false;
   }
 
-  if (LittleFS.exists(path)) LittleFS.remove(path);
   File f = LittleFS.open(path, "w");
   if (!f) {
-    Serial.println("Failed to open file for writing");
+    Serial.println("Failed to open file for writing - Re-formatting LittleFS safety trigger");
     http.end();
     client.stop();
     return false;
   }
 
-  size_t totalWritten = http.writeToStream(&f);
-
+  int totalWritten = http.writeToStream(&f);
+  f.flush();
   f.close();
+
   http.end();
   client.stop();   
 
-  Serial.printf("TTS file written: %u bytes\n", (unsigned)totalWritten);
+  if (totalWritten <= 0) {
+    Serial.printf("TTS write failed with error code: %d\n", totalWritten);
+    if (LittleFS.exists(path)) LittleFS.remove(path); // Clean corrupted write attempt
+    return false;
+  }
+
+  Serial.printf("TTS file written: %d bytes\n", totalWritten);
   return totalWritten > 500;
 }
 
@@ -255,7 +312,7 @@ void speakText(String text) {
         audio.connecttoFS(LittleFS, path); 
         waitForAudioToFinish();
       } else {
-        Serial.println("TTS chunk fetch failed, skipping.");
+        Serial.println("TTS chunk fetch failed, skipping audio playback.");
       }
     }
     start = end;
@@ -301,6 +358,7 @@ void resetDailyTrackingIfNewDay() {
   if (today != lastResetDate) {
     dispensedIds.clear();
     lastResetDate = today;
+    saveDispensedIdsToNVS();
   }
 }
 
@@ -367,13 +425,15 @@ void logDoseToBackend(String scheduleId) {
 
 void executeDispenseCycle(int compartmentNum, String scheduleId, String medName, String dosage,
                           String compartmentLabel, int scheduledMin, String nextDoseAnnouncement) {
+  
   int degree = degreeOfRotation[compartmentNum];
   int steps = (degree * StepsPerRevolution) / 360;
   myServo.write(0);
 
   Serial.printf("Rotating stepper to compartment %d (%d degrees)...\n", compartmentNum, degree);
   myStepper.step(steps);
-  delay(1000);
+  releaseMotor(); 
+  delay(500);
 
   String currentTimeStr = formatMinutesToClock(getCurrentTimeInMinutes());
   String announcement = medName + " is available at compartment " + compartmentLabel +
@@ -381,33 +441,81 @@ void executeDispenseCycle(int compartmentNum, String scheduleId, String medName,
                          "The current time is " + currentTimeStr + ", and the next medicine is at " +
                          nextDoseAnnouncement + ".";
 
-  Serial.printf("Free heap before TTS: %d\n", ESP.getFreeHeap());
   speakText(announcement);
-  
-  Serial.println("TTS done, opening servo now");
+  speakText("Compartment is opening. Please reach in to take your medicine.");
 
-  delay(50);
-  myServo.write(90);
-  Serial.println("Servo opened, waiting for hand...");
+  // Open the door
+  myServo.write(180);
+  delay(1000); // Give servo time to fully open and settle mechanically
 
-  while (digitalRead(IR_PIN) == HIGH) {
+  // CRITICAL: Clear any false interrupts caused by motor movement or closed-state reflections
+  g_handDetectedDuringCycle = false; 
+
+  Serial.println("Servo fully opened. Waiting for hand insertion...");
+
+  unsigned long waitStart = millis();
+  unsigned long lastReminder = millis();
+  bool handConfirmed = false;
+
+  // Wait loop
+  while (millis() - waitStart < HAND_WAIT_TIMEOUT) {
     yield();
-    delay(50);
+
+    // Only count as hand detection if sensor transitions/holds LOW long enough
+    if (g_handDetectedDuringCycle || digitalRead(IR_PIN) == LOW) {
+      
+      // Debounce check: ensure hand stays present for 300ms continuously
+      unsigned long detectStart = millis();
+      bool steadyHand = true;
+      while (millis() - detectStart < 300) {
+        if (digitalRead(IR_PIN) == HIGH) {
+          steadyHand = false;
+          break;
+        }
+        delay(10);
+      }
+
+      if (steadyHand) {
+        handConfirmed = true;
+        Serial.println("Hand confirmed in compartment!");
+        break;
+      } else {
+        // Was just temporary noise/reflection spike
+        g_handDetectedDuringCycle = false;
+      }
+    }
+
+    // Periodic Reminder
+    if (millis() - lastReminder >= HAND_WAIT_REMINDER_INTERVAL) {
+      lastReminder = millis();
+      Serial.println("Reminder: waiting for hand...");
+      speakText("Still waiting. Please reach into compartment " + compartmentLabel + ".");
+      g_handDetectedDuringCycle = false; // clear audio-induced false triggers
+    }
+
+    delay(30);
   }
 
-  delay(300);
-  if (digitalRead(IR_PIN) == LOW) {
-    Serial.println("Hand detected, closing servo...");
-    delay(5000);
+  // Door Closing Sequence
+  if (handConfirmed) {
+    speakText("Got it. Closing the compartment now.");
+    delay(1500); 
     myServo.write(0);
-    delay(5000);
+    delay(1000);
+    speakText("Dose recorded. Have a good day.");
+    logDoseToBackend(scheduleId);
+  } else {
+    Serial.println("Timed out waiting for hand.");
+    speakText("No hand detected. Closing compartment for safety.");
+    myServo.write(0);
+    delay(1000);
+    speakText("Dose was not confirmed as taken. Please check your schedule.");
   }
 
+  // Return stepper home
   myStepper.step(-steps);
+  releaseMotor(); 
   delay(1000);
-  releaseMotor();
-
-  logDoseToBackend(scheduleId);
 }
 
 void pollPendingDoses() {
@@ -473,6 +581,7 @@ void pollPendingDoses() {
                 continue; 
               }
               dispensedIds.insert(scheduleId); 
+              saveDispensedIdsToNVS(); // Persist to NVS flash memory
 
               Serial.printf("Dispensing compartment %d for scheduleId %s...\n", compartmentNum, scheduleId.c_str());
 
@@ -513,8 +622,10 @@ void setup() {
 
   myStepper.setSpeed(10);
   pinMode(IR_PIN, INPUT_PULLUP);
+  attachInterrupt(digitalPinToInterrupt(IR_PIN), irSensorISR, FALLING);
 
   setupWiFiAndPortal();
+  loadDispensedIdsFromNVS();
 
   // Initialize I2S Audio FIRST
   audio.setPinout(I2S_BCLK, I2S_LRC, I2S_DOUT);
