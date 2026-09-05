@@ -586,6 +586,25 @@
   var activity = [];
   var historyLogs = [];
 
+  var SESSION_STORAGE_KEY = 'meditracker_session';
+
+  function saveSession(session){
+    try {
+      localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(session));
+    } catch(e){ console.warn('Could not persist session:', e); }
+  }
+  
+  function loadSavedSession(){
+    try {
+      var raw = localStorage.getItem(SESSION_STORAGE_KEY);
+      return raw ? JSON.parse(raw) : null;
+    } catch(e){ return null; }
+  }
+  
+  function clearSavedSession(){
+    try { localStorage.removeItem(SESSION_STORAGE_KEY); } catch(e){}
+  }
+
   async function apiFetch(path, options){
     options = options || {};
     var headers = options.headers || {};
@@ -676,6 +695,7 @@
   async function enterDashboard(session){
     sessionApiKey = session.apiKey;
     currentUser = session.user;
+    saveSession(session); // <-- persist it
     document.getElementById('userNameLabel').textContent = currentUser.fullName;
     document.getElementById('userAvatar').textContent = currentUser.fullName.charAt(0).toUpperCase();
     document.getElementById('username').value = '';
@@ -736,11 +756,12 @@
     sessionApiKey = '';
     currentUser = null;
     pillboxDeviceKey = '';
+    clearSavedSession(); // <-- clear it
     dashboard.classList.remove('active');
     loginScreen.style.display = 'grid';
     setAuthMode('login');
   });
-
+  
   var navItems = document.querySelectorAll('.nav-item');
   var pages = document.querySelectorAll('.page');
   var titles = {
@@ -1228,6 +1249,34 @@
     renderEditDropdown();
     renderRestock();
   }
+
+  (async function tryRestoreSession(){
+  var saved = loadSavedSession();
+  if (!saved || !saved.apiKey || !saved.user) return;
+
+  // Tentatively set the key so apiFetch can use it
+  sessionApiKey = saved.apiKey;
+  currentUser = saved.user;
+
+  // Verify it's still valid by making a real call
+  var medRes = await apiFetch('/medicines');
+  if (medRes === null) {
+    // Key is stale/invalid — bail out to login screen
+    sessionApiKey = '';
+    currentUser = null;
+    clearSavedSession();
+    return;
+  }
+
+  // Valid — go straight to dashboard
+  document.getElementById('userNameLabel').textContent = currentUser.fullName;
+  document.getElementById('userAvatar').textContent = currentUser.fullName.charAt(0).toUpperCase();
+  loginScreen.style.display = 'none';
+  dashboard.classList.add('active');
+  medicines = medRes;
+  await loadDeviceKey();
+  await refreshAll();
+})();
 
 })();
 </script>
