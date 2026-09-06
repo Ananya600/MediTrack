@@ -1,8 +1,7 @@
+require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
-const initSqlJs = require('sql.js');
-const fs = require('fs');
-const path = require('path');
+const { Pool } = require('pg');
 const crypto = require('crypto');
 const bcrypt = require('bcryptjs');
 
@@ -13,141 +12,113 @@ app.use(cors());
 app.use(express.json());
 app.use(express.static(__dirname)); // serves index.html at "/"
 
-const dbFilePath = path.join(__dirname, 'meditracker.db');
+if (!process.env.DATABASE_URL) {
+  console.error('DATABASE_URL is not set. Add it to your environment variables (.env locally, Render dashboard in production).');
+  process.exit(1);
+}
+
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: { rejectUnauthorized: false } // required by Neon/Render-hosted Postgres
+});
 
 async function startServer() {
-  const SQL = await initSqlJs();
-  let db;
-
-  // Load existing database file if present, otherwise create a new one
-  if (fs.existsSync(dbFilePath)) {
-    const fileBuffer = fs.readFileSync(dbFilePath);
-    db = new SQL.Database(fileBuffer);
-    console.log('Loaded existing database from meditracker.db');
-  } else {
-    db = new SQL.Database();
-    console.log('Created new SQLite database');
-  }
-
-  // Save database back to disk on every write
-  function saveDatabase() {
-    const data = db.export();
-    const buffer = Buffer.from(data);
-    fs.writeFileSync(dbFilePath, buffer);
-  }
-
   // Create tables automatically (including timing and comments)
-  db.run(`
+  await pool.query(`
     CREATE TABLE IF NOT EXISTS medicines (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      id SERIAL PRIMARY KEY,
       username TEXT NOT NULL DEFAULT '',
       name TEXT NOT NULL,
       compartment TEXT NOT NULL,
       threshold INTEGER DEFAULT 5,
-      pillsFull INTEGER DEFAULT 30,
-      pillsLeft INTEGER DEFAULT 30,
-      createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
+      "pillsFull" INTEGER DEFAULT 30,
+      "pillsLeft" INTEGER DEFAULT 30,
+      "createdAt" TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     );
 
     CREATE TABLE IF NOT EXISTS schedules (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      medicine_id INTEGER,
+      id SERIAL PRIMARY KEY,
+      medicine_id INTEGER REFERENCES medicines(id) ON DELETE CASCADE,
       time TEXT NOT NULL,
       dosage TEXT NOT NULL,
       timing TEXT DEFAULT 'After Food',
       comments TEXT DEFAULT '',
-      days TEXT DEFAULT 'daily',
-      FOREIGN KEY(medicine_id) REFERENCES medicines(id) ON DELETE CASCADE
+      days TEXT DEFAULT 'daily'
     );
 
     CREATE TABLE IF NOT EXISTS dose_logs (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      schedule_id INTEGER,
+      id SERIAL PRIMARY KEY,
+      schedule_id INTEGER REFERENCES schedules(id) ON DELETE CASCADE,
       medicine_id INTEGER,
       date TEXT NOT NULL,
       taken INTEGER DEFAULT 0,
-      takenAt DATETIME,
-      FOREIGN KEY(schedule_id) REFERENCES schedules(id) ON DELETE CASCADE
+      "takenAt" TIMESTAMP
     );
 
     CREATE TABLE IF NOT EXISTS activity_logs (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      id SERIAL PRIMARY KEY,
       username TEXT NOT NULL DEFAULT '',
       item TEXT NOT NULL,
       action TEXT NOT NULL,
-      createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
+      "createdAt" TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     );
 
     CREATE TABLE IF NOT EXISTS accounts (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      fullName TEXT NOT NULL,
+      id SERIAL PRIMARY KEY,
+      "fullName" TEXT NOT NULL,
       username TEXT NOT NULL UNIQUE,
-      passwordHash TEXT NOT NULL,
-      apiKey TEXT NOT NULL UNIQUE,
-      createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
+      "passwordHash" TEXT NOT NULL,
+      "apiKey" TEXT NOT NULL UNIQUE,
+      "createdAt" TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     );
   `);
-  
-  // Safe migration check for existing databases that might lack newer columns
-  try {
-    db.run(`ALTER TABLE schedules ADD COLUMN timing TEXT DEFAULT 'After Food'`);
-  } catch (e) { /* Column likely already exists */ }
-  try {
-    db.run(`ALTER TABLE schedules ADD COLUMN comments TEXT DEFAULT ''`);
-  } catch (e) { /* Column likely already exists */ }
-  try {
-    db.run(`ALTER TABLE medicines ADD COLUMN username TEXT NOT NULL DEFAULT ''`);
-  } catch (e) { /* Column likely already exists */ }
-  try {
-    db.run(`ALTER TABLE activity_logs ADD COLUMN username TEXT NOT NULL DEFAULT ''`);
-  } catch (e) { /* Column likely already exists */ }
+
+  // Safe migration for databases that might lack newer columns.
+  // Postgres supports IF NOT EXISTS directly, so no try/catch needed.
+  await pool.query(`
+    ALTER TABLE schedules ADD COLUMN IF NOT EXISTS timing TEXT DEFAULT 'After Food';
+    ALTER TABLE schedules ADD COLUMN IF NOT EXISTS comments TEXT DEFAULT '';
+    ALTER TABLE medicines ADD COLUMN IF NOT EXISTS username TEXT NOT NULL DEFAULT '';
+    ALTER TABLE activity_logs ADD COLUMN IF NOT EXISTS username TEXT NOT NULL DEFAULT '';
+  `);
 
   // One-time backfill: medicines/activity created before accounts existed
   // got stamped with username = '' by the migration above, which makes
   // them invisible to every route now that everything is ownership-scoped.
   // Assign that orphaned data to sivani. Safe to leave in permanently —
   // once there's nothing left with username = '', these are no-ops.
-  const sivaniCheck = db.prepare(`SELECT id FROM accounts WHERE username = ?`);
-  sivaniCheck.bind(['sivani']);
-  if (sivaniCheck.step()) {
-    db.run(`UPDATE medicines SET username = 'sivani' WHERE username = ''`);
-    db.run(`UPDATE activity_logs SET username = 'sivani' WHERE username = ''`);
+  const sivaniCheck = await pool.query(`SELECT id FROM accounts WHERE username = $1`, ['sivani']);
+  if (sivaniCheck.rows.length) {
+    await pool.query(`UPDATE medicines SET username = 'sivani' WHERE username = ''`);
+    await pool.query(`UPDATE activity_logs SET username = 'sivani' WHERE username = ''`);
   }
-  sivaniCheck.free();
 
-  saveDatabase();
-
-  // --- ACCOUNTS: real login, backed by this same database file — no
-  // separate auth service, no cloud DB. Each account gets its own
-  // permanent apiKey at creation time, so it never changes on a redeploy
-  // the way the single shared device key could if its row ever got lost.
+  // --- ACCOUNTS: real login, backed by this same Postgres database — no
+  // separate auth service. Each account gets its own permanent apiKey at
+  // creation time, so it never changes on a redeploy the way the single
+  // shared device key could if its row ever got lost.
   //
   // These two routes are intentionally public (same reasoning /device-key
   // used to have): you can't send a key you don't have yet. Everything
   // else, including /api/device-key now, requires one.
-  app.post('/api/auth/register', (req, res) => {
+  app.post('/api/auth/register', async (req, res) => {
     try {
       const { fullName, username, password } = req.body || {};
       if (!fullName || !String(fullName).trim()) return res.status(400).json({ error: 'Full name is required.' });
       if (!username || !String(username).trim()) return res.status(400).json({ error: 'Username is required.' });
       if (!password || String(password).length < 6) return res.status(400).json({ error: 'Password must be at least 6 characters.' });
 
-      const existing = db.prepare('SELECT id FROM accounts WHERE username = ?');
-      existing.bind([username.trim()]);
-      const taken = existing.step();
-      existing.free();
-      if (taken) return res.status(409).json({ error: 'That username is already taken.' });
+      const existing = await pool.query('SELECT id FROM accounts WHERE username = $1', [username.trim()]);
+      if (existing.rows.length) return res.status(409).json({ error: 'That username is already taken.' });
 
       const passwordHash = bcrypt.hashSync(password, 10);
       const accountApiKey = crypto.randomBytes(16).toString('hex');
 
-      db.run(
-        `INSERT INTO accounts (fullName, username, passwordHash, apiKey) VALUES (?, ?, ?, ?)`,
+      const insertRes = await pool.query(
+        `INSERT INTO accounts ("fullName", username, "passwordHash", "apiKey") VALUES ($1, $2, $3, $4) RETURNING id`,
         [fullName.trim(), username.trim(), passwordHash, accountApiKey]
       );
-      const idRes = db.exec('SELECT last_insert_rowid() as id');
-      const accountId = idRes[0].values[0][0];
-      saveDatabase();
+      const accountId = insertRes.rows[0].id;
 
       res.status(201).json({
         apiKey: accountApiKey,
@@ -158,19 +129,14 @@ async function startServer() {
     }
   });
 
-  app.post('/api/auth/login', (req, res) => {
+  app.post('/api/auth/login', async (req, res) => {
     try {
       const { username, password } = req.body || {};
       if (!username || !password) return res.status(400).json({ error: 'Username and password are required.' });
 
-      const stmt = db.prepare('SELECT * FROM accounts WHERE username = ?');
-      stmt.bind([username.trim()]);
-      if (!stmt.step()) {
-        stmt.free();
-        return res.status(401).json({ error: 'Invalid username or password.' });
-      }
-      const account = stmt.getAsObject();
-      stmt.free();
+      const result = await pool.query('SELECT * FROM accounts WHERE username = $1', [username.trim()]);
+      if (!result.rows.length) return res.status(401).json({ error: 'Invalid username or password.' });
+      const account = result.rows[0];
 
       if (!bcrypt.compareSync(password, account.passwordHash)) {
         return res.status(401).json({ error: 'Invalid username or password.' });
@@ -189,19 +155,19 @@ async function startServer() {
   // shared device key any more — each account's own permanent apiKey IS
   // its ESP32 key too, so a pillbox and its dashboard always resolve to
   // the same account and only ever see that account's data.
-  function requireApiKey(req, res, next) {
-    const key = req.header('x-api-key');
-    if (!key) return res.status(401).json({ error: 'Missing or invalid API key' });
+  async function requireApiKey(req, res, next) {
+    try {
+      const key = req.header('x-api-key');
+      if (!key) return res.status(401).json({ error: 'Missing or invalid API key' });
 
-    const stmt = db.prepare('SELECT id, username, fullName FROM accounts WHERE apiKey = ?');
-    stmt.bind([key]);
-    if (!stmt.step()) {
-      stmt.free();
-      return res.status(401).json({ error: 'Missing or invalid API key' });
+      const result = await pool.query('SELECT id, username, "fullName" FROM accounts WHERE "apiKey" = $1', [key]);
+      if (!result.rows.length) return res.status(401).json({ error: 'Missing or invalid API key' });
+
+      req.account = result.rows[0];
+      next();
+    } catch (err) {
+      res.status(500).json({ error: err.message });
     }
-    req.account = stmt.getAsObject();
-    stmt.free();
-    next();
   }
   app.use('/api', requireApiKey);
 
@@ -216,22 +182,19 @@ async function startServer() {
 
   // GET: Fetch all medicines with schedules (including timing and comments)
   // — scoped to the logged-in account, never another account's data.
-  app.get('/api/medicines', (req, res) => {
+  app.get('/api/medicines', async (req, res) => {
     try {
-      const medStmt = db.prepare("SELECT * FROM medicines WHERE username = ?");
-      medStmt.bind([req.account.username]);
-      const medicines = [];
-      while (medStmt.step()) medicines.push(medStmt.getAsObject());
-      medStmt.free();
+      const medResult = await pool.query('SELECT * FROM medicines WHERE username = $1', [req.account.username]);
+      const medicines = medResult.rows;
 
       const medIds = medicines.map(m => m.id);
-      const schedules = [];
+      let schedules = [];
       if (medIds.length) {
-        const placeholders = medIds.map(() => '?').join(',');
-        const schedStmt = db.prepare(`SELECT * FROM schedules WHERE medicine_id IN (${placeholders})`);
-        schedStmt.bind(medIds);
-        while (schedStmt.step()) schedules.push(schedStmt.getAsObject());
-        schedStmt.free();
+        const schedResult = await pool.query(
+          `SELECT * FROM schedules WHERE medicine_id = ANY($1::int[])`,
+          [medIds]
+        );
+        schedules = schedResult.rows;
       }
 
       const result = medicines.map(m => {
@@ -239,14 +202,14 @@ async function startServer() {
           .filter(s => s.medicine_id === m.id)
           .map(s => {
             let days = s.days;
-            try { days = JSON.parse(s.days); } catch(e){}
-            return { 
-              id: s.id, 
-              time: s.time, 
-              dosage: s.dosage, 
-              timing: s.timing || 'After Food', 
-              comments: s.comments || '', 
-              days 
+            try { days = JSON.parse(s.days); } catch (e) {}
+            return {
+              id: s.id,
+              time: s.time,
+              dosage: s.dosage,
+              timing: s.timing || 'After Food',
+              comments: s.comments || '',
+              days
             };
           });
         return { ...m, schedule: medSchedules };
@@ -259,30 +222,30 @@ async function startServer() {
   });
 
   // POST: Add new medicine (with schedule timing and comments)
-  app.post('/api/medicines', (req, res) => {
+  app.post('/api/medicines', async (req, res) => {
     try {
       const { name, compartment, threshold, pillsFull, pillsLeft, schedule } = req.body;
 
-      db.run(
-        `INSERT INTO medicines (username, name, compartment, threshold, pillsFull, pillsLeft) VALUES (?, ?, ?, ?, ?, ?)`,
+      const insertRes = await pool.query(
+        `INSERT INTO medicines (username, name, compartment, threshold, "pillsFull", "pillsLeft") VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
         [req.account.username, name, compartment, threshold || 5, pillsFull || 30, pillsLeft || 30]
       );
-
-      const resId = db.exec("SELECT last_insert_rowid() as id");
-      const medId = resId[0].values[0][0];
+      const medId = insertRes.rows[0].id;
 
       if (schedule && schedule.length) {
-        schedule.forEach(s => {
+        for (const s of schedule) {
           const daysVal = Array.isArray(s.days) ? JSON.stringify(s.days) : (s.days || 'daily');
-          db.run(
-            `INSERT INTO schedules (medicine_id, time, dosage, timing, comments, days) VALUES (?, ?, ?, ?, ?, ?)`,
+          await pool.query(
+            `INSERT INTO schedules (medicine_id, time, dosage, timing, comments, days) VALUES ($1, $2, $3, $4, $5, $6)`,
             [medId, s.time, s.dosage, s.timing || 'After Food', s.comments || '', daysVal]
           );
-        });
+        }
       }
 
-      db.run(`INSERT INTO activity_logs (username, item, action) VALUES (?, ?, ?)`, [req.account.username, name, `Added to compartment ${compartment}`]);
-      saveDatabase();
+      await pool.query(
+        `INSERT INTO activity_logs (username, item, action) VALUES ($1, $2, $3)`,
+        [req.account.username, name, `Added to compartment ${compartment}`]
+      );
 
       res.status(201).json({ id: medId, message: 'Medicine created successfully' });
     } catch (err) {
@@ -291,19 +254,16 @@ async function startServer() {
   });
 
   // PUT: Update medicine and cleanly sync schedules (with timing and comments)
-  app.put('/api/medicines/:id', (req, res) => {
+  app.put('/api/medicines/:id', async (req, res) => {
     try {
       const medId = req.params.id;
       const { name, compartment, threshold, pillsFull, pillsLeft, schedule } = req.body;
 
-      const ownerCheck = db.prepare('SELECT id FROM medicines WHERE id = ? AND username = ?');
-      ownerCheck.bind([medId, req.account.username]);
-      const owns = ownerCheck.step();
-      ownerCheck.free();
-      if (!owns) return res.status(404).json({ error: 'Medicine not found' });
+      const ownerCheck = await pool.query('SELECT id FROM medicines WHERE id = $1 AND username = $2', [medId, req.account.username]);
+      if (!ownerCheck.rows.length) return res.status(404).json({ error: 'Medicine not found' });
 
-      db.run(
-        `UPDATE medicines SET name = ?, compartment = ?, threshold = ?, pillsFull = ?, pillsLeft = ? WHERE id = ? AND username = ?`,
+      await pool.query(
+        `UPDATE medicines SET name = $1, compartment = $2, threshold = $3, "pillsFull" = $4, "pillsLeft" = $5 WHERE id = $6 AND username = $7`,
         [name, compartment, threshold, pillsFull, pillsLeft, medId, req.account.username]
       );
 
@@ -313,41 +273,40 @@ async function startServer() {
       // attached to it. Rows with no id, or an id that doesn't match, are
       // inserted fresh. Any existing row not present in the submitted list
       // is removed.
-      const existingStmt = db.prepare(`SELECT id FROM schedules WHERE medicine_id = ?`);
-      existingStmt.bind([medId]);
-      const existingIds = [];
-      while (existingStmt.step()) existingIds.push(existingStmt.getAsObject().id);
-      existingStmt.free();
+      const existingRes = await pool.query(`SELECT id FROM schedules WHERE medicine_id = $1`, [medId]);
+      const existingIds = existingRes.rows.map(r => r.id);
 
       const keepIds = [];
       if (schedule && schedule.length) {
-        schedule.forEach(s => {
+        for (const s of schedule) {
           const daysVal = Array.isArray(s.days) ? JSON.stringify(s.days) : (s.days || 'daily');
           const matchesExisting = s.id && existingIds.includes(Number(s.id));
 
           if (matchesExisting) {
-            db.run(
-              `UPDATE schedules SET time = ?, dosage = ?, timing = ?, comments = ?, days = ? WHERE id = ? AND medicine_id = ?`,
+            await pool.query(
+              `UPDATE schedules SET time = $1, dosage = $2, timing = $3, comments = $4, days = $5 WHERE id = $6 AND medicine_id = $7`,
               [s.time, s.dosage, s.timing || 'After Food', s.comments || '', daysVal, s.id, medId]
             );
             keepIds.push(Number(s.id));
           } else {
-            db.run(
-              `INSERT INTO schedules (medicine_id, time, dosage, timing, comments, days) VALUES (?, ?, ?, ?, ?, ?)`,
+            const idRes = await pool.query(
+              `INSERT INTO schedules (medicine_id, time, dosage, timing, comments, days) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
               [medId, s.time, s.dosage, s.timing || 'After Food', s.comments || '', daysVal]
             );
-            const idRes = db.exec("SELECT last_insert_rowid() as id");
-            keepIds.push(idRes[0].values[0][0]);
+            keepIds.push(idRes.rows[0].id);
           }
-        });
+        }
       }
 
-      existingIds
-        .filter(id => !keepIds.includes(id))
-        .forEach(id => db.run(`DELETE FROM schedules WHERE id = ?`, [id]));
+      const idsToDelete = existingIds.filter(id => !keepIds.includes(id));
+      for (const id of idsToDelete) {
+        await pool.query(`DELETE FROM schedules WHERE id = $1`, [id]);
+      }
 
-      db.run(`INSERT INTO activity_logs (username, item, action) VALUES (?, ?, ?)`, [req.account.username, name, 'Updated medicine configuration']);
-      saveDatabase();
+      await pool.query(
+        `INSERT INTO activity_logs (username, item, action) VALUES ($1, $2, $3)`,
+        [req.account.username, name, 'Updated medicine configuration']
+      );
       res.json({ message: 'Medicine updated successfully' });
     } catch (err) {
       res.status(500).json({ error: err.message });
@@ -356,17 +315,13 @@ async function startServer() {
 
   // DELETE: Delete a specific schedule item — only if the parent medicine
   // belongs to this account.
-  app.delete('/api/medicines/:id/schedule/:scheduleId', (req, res) => {
+  app.delete('/api/medicines/:id/schedule/:scheduleId', async (req, res) => {
     try {
       const { id, scheduleId } = req.params;
-      const ownerCheck = db.prepare('SELECT id FROM medicines WHERE id = ? AND username = ?');
-      ownerCheck.bind([id, req.account.username]);
-      const owns = ownerCheck.step();
-      ownerCheck.free();
-      if (!owns) return res.status(404).json({ error: 'Medicine not found' });
+      const ownerCheck = await pool.query('SELECT id FROM medicines WHERE id = $1 AND username = $2', [id, req.account.username]);
+      if (!ownerCheck.rows.length) return res.status(404).json({ error: 'Medicine not found' });
 
-      db.run(`DELETE FROM schedules WHERE id = ? AND medicine_id = ?`, [scheduleId, id]);
-      saveDatabase();
+      await pool.query(`DELETE FROM schedules WHERE id = $1 AND medicine_id = $2`, [scheduleId, id]);
       res.json({ message: 'Schedule entry deleted successfully' });
     } catch (err) {
       res.status(500).json({ error: err.message });
@@ -374,23 +329,20 @@ async function startServer() {
   });
 
   // DELETE: Delete medicine entirely — only this account's own
-  app.delete('/api/medicines/:id', (req, res) => {
+  app.delete('/api/medicines/:id', async (req, res) => {
     try {
       const medId = req.params.id;
 
-      const stmt = db.prepare(`SELECT name FROM medicines WHERE id = ? AND username = ?`);
-      stmt.bind([medId, req.account.username]);
-      if (!stmt.step()) {
-        stmt.free();
-        return res.status(404).json({ error: 'Medicine not found' });
-      }
-      const medName = stmt.getAsObject().name;
-      stmt.free();
+      const findRes = await pool.query(`SELECT name FROM medicines WHERE id = $1 AND username = $2`, [medId, req.account.username]);
+      if (!findRes.rows.length) return res.status(404).json({ error: 'Medicine not found' });
+      const medName = findRes.rows[0].name;
 
-      db.run(`DELETE FROM medicines WHERE id = ? AND username = ?`, [medId, req.account.username]);
-      db.run(`INSERT INTO activity_logs (username, item, action) VALUES (?, ?, ?)`, [req.account.username, medName, 'Deleted medicine from system']);
-      
-      saveDatabase();
+      await pool.query(`DELETE FROM medicines WHERE id = $1 AND username = $2`, [medId, req.account.username]);
+      await pool.query(
+        `INSERT INTO activity_logs (username, item, action) VALUES ($1, $2, $3)`,
+        [req.account.username, medName, 'Deleted medicine from system']
+      );
+
       res.json({ message: 'Medicine deleted successfully' });
     } catch (err) {
       res.status(500).json({ error: err.message });
@@ -406,28 +358,27 @@ async function startServer() {
     return h * 60 + (m || 0);
   }
 
-  app.get('/api/doses/today', (req, res) => {
+  app.get('/api/doses/today', async (req, res) => {
     try {
       const now = new Date();
       const todayStr = now.toISOString().split('T')[0];
       const nowMinutes = now.getHours() * 60 + now.getMinutes();
       const todayDow = now.getDay(); // 0=Sun..6=Sat, matches the frontend's day chips
 
-      const stmt = db.prepare(`
-        SELECT s.id as scheduleId, s.time, s.dosage, s.timing, s.comments, s.days, m.id as medicineId, m.name as medicineName, m.compartment,
+      const result = await pool.query(
+        `
+        SELECT s.id as "scheduleId", s.time, s.dosage, s.timing, s.comments, s.days,
+               m.id as "medicineId", m.name as "medicineName", m.compartment,
                COALESCE(dl.taken, 0) as taken
         FROM schedules s
         JOIN medicines m ON s.medicine_id = m.id
-        LEFT JOIN dose_logs dl ON dl.schedule_id = s.id AND dl.date = ?
-        WHERE m.username = ?
-      `);
-      stmt.bind([todayStr, req.account.username]);
+        LEFT JOIN dose_logs dl ON dl.schedule_id = s.id AND dl.date = $1
+        WHERE m.username = $2
+        `,
+        [todayStr, req.account.username]
+      );
 
-      const rows = [];
-      while (stmt.step()) rows.push(stmt.getAsObject());
-      stmt.free();
-
-      const result = rows
+      const resultRows = result.rows
         .filter(r => {
           let days = r.days;
           try { days = JSON.parse(r.days); } catch (e) { /* leave as-is, e.g. 'daily' */ }
@@ -446,42 +397,40 @@ async function startServer() {
           return { ...rest, state: taken ? 'taken' : state, taken };
         });
 
-      res.json(result);
+      res.json(resultRows);
     } catch (err) {
       res.status(500).json({ error: err.message });
     }
   });
 
   // POST: Mark dose taken
-  app.post('/api/doses/:scheduleId/taken', (req, res) => {
+  app.post('/api/doses/:scheduleId/taken', async (req, res) => {
     try {
       const scheduleId = req.params.scheduleId;
       const todayStr = new Date().toISOString().split('T')[0];
 
-      const stmt = db.prepare(`
+      const result = await pool.query(
+        `
         SELECT s.medicine_id FROM schedules s
         JOIN medicines m ON s.medicine_id = m.id
-        WHERE s.id = ? AND m.username = ?
-      `);
-      stmt.bind([scheduleId, req.account.username]);
+        WHERE s.id = $1 AND m.username = $2
+        `,
+        [scheduleId, req.account.username]
+      );
+      if (!result.rows.length) return res.status(404).json({ error: 'Schedule not found' });
+      const medId = result.rows[0].medicine_id;
 
-      if (!stmt.step()) {
-        stmt.free();
-        return res.status(404).json({ error: 'Schedule not found' });
-      }
-      
-      const medId = stmt.getAsObject().medicine_id;
-      stmt.free();
-
-      db.run(
-        `INSERT INTO dose_logs (schedule_id, medicine_id, date, taken, takenAt) VALUES (?, ?, ?, 1, CURRENT_TIMESTAMP)`,
+      await pool.query(
+        `INSERT INTO dose_logs (schedule_id, medicine_id, date, taken, "takenAt") VALUES ($1, $2, $3, 1, CURRENT_TIMESTAMP)`,
         [scheduleId, medId, todayStr]
       );
 
-      db.run(`UPDATE medicines SET pillsLeft = MAX(0, pillsLeft - 1) WHERE id = ?`, [medId]);
-      db.run(`INSERT INTO activity_logs (username, item, action) VALUES (?, (SELECT name FROM medicines WHERE id = ?), 'Dose dispensed')`, [req.account.username, medId]);
+      await pool.query(`UPDATE medicines SET "pillsLeft" = GREATEST(0, "pillsLeft" - 1) WHERE id = $1`, [medId]);
+      await pool.query(
+        `INSERT INTO activity_logs (username, item, action) VALUES ($1, (SELECT name FROM medicines WHERE id = $2), 'Dose dispensed')`,
+        [req.account.username, medId]
+      );
 
-      saveDatabase();
       res.json({ message: 'Dose marked as taken' });
     } catch (err) {
       res.status(500).json({ error: err.message });
@@ -489,21 +438,20 @@ async function startServer() {
   });
 
   // POST: Restock
-  app.post('/api/restock/:id', (req, res) => {
+  app.post('/api/restock/:id', async (req, res) => {
     try {
       const medId = req.params.id;
       const { qty } = req.body;
 
-      const ownerCheck = db.prepare('SELECT id FROM medicines WHERE id = ? AND username = ?');
-      ownerCheck.bind([medId, req.account.username]);
-      const owns = ownerCheck.step();
-      ownerCheck.free();
-      if (!owns) return res.status(404).json({ error: 'Medicine not found' });
+      const ownerCheck = await pool.query('SELECT id FROM medicines WHERE id = $1 AND username = $2', [medId, req.account.username]);
+      if (!ownerCheck.rows.length) return res.status(404).json({ error: 'Medicine not found' });
 
-      db.run(`UPDATE medicines SET pillsLeft = ? WHERE id = ? AND username = ?`, [qty, medId, req.account.username]);
-      db.run(`INSERT INTO activity_logs (username, item, action) VALUES (?, (SELECT name FROM medicines WHERE id = ?), ?)`, [req.account.username, medId, `Restocked to ${qty} pills`]);
+      await pool.query(`UPDATE medicines SET "pillsLeft" = $1 WHERE id = $2 AND username = $3`, [qty, medId, req.account.username]);
+      await pool.query(
+        `INSERT INTO activity_logs (username, item, action) VALUES ($1, (SELECT name FROM medicines WHERE id = $2), $3)`,
+        [req.account.username, medId, `Restocked to ${qty} pills`]
+      );
 
-      saveDatabase();
       res.json({ message: 'Compartment restocked' });
     } catch (err) {
       res.status(500).json({ error: err.message });
@@ -511,14 +459,13 @@ async function startServer() {
   });
 
   // GET: Fetch activity logs
-  app.get('/api/doses/activity', (req, res) => {
+  app.get('/api/doses/activity', async (req, res) => {
     try {
-      const stmt = db.prepare(`SELECT * FROM activity_logs WHERE username = ? ORDER BY createdAt DESC LIMIT 10`);
-      stmt.bind([req.account.username]);
-      const rows = [];
-      while (stmt.step()) rows.push(stmt.getAsObject());
-      stmt.free();
-      res.json(rows);
+      const result = await pool.query(
+        `SELECT * FROM activity_logs WHERE username = $1 ORDER BY "createdAt" DESC LIMIT 10`,
+        [req.account.username]
+      );
+      res.json(result.rows);
     } catch (err) {
       res.status(500).json({ error: err.message });
     }
@@ -529,4 +476,7 @@ async function startServer() {
   });
 }
 
-startServer();
+startServer().catch(err => {
+  console.error('Failed to start server:', err);
+  process.exit(1);
+});
