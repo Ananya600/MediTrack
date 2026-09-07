@@ -478,7 +478,7 @@
             </div>
             <div>
               <label for="editCompartment">Compartment ID</label>
-              <input type="text" id="editCompartment">
+              <select id="editCompartment"></select>
             </div>
             <div>
               <label for="editThreshold">Refill Alert Threshold (Pills)</label>
@@ -585,6 +585,13 @@
   var todaysDoses = [];
   var activity = [];
   var historyLogs = [];
+
+  // Fixed set of physical pill box slots. The dropdown is filtered down
+  // to whichever of these aren't already assigned to another medicine —
+  // recomputed fresh every time the form is opened, so it always reflects
+  // the current state of `medicines` (which itself gets refreshed after
+  // every add/edit/delete via refreshAll()).
+  var COMPARTMENTS = ['A1','A2','A3','A4','A5','A6','A7','A8'];
 
   var SESSION_STORAGE_KEY = 'meditracker_session';
 
@@ -1096,6 +1103,38 @@
     document.getElementById('scheduleEditor').appendChild(renderScheduleRow());
   });
 
+  // Fills the Compartment ID dropdown with whichever of the 8 fixed slots
+  // (A1-A8) aren't already assigned to a DIFFERENT medicine. The medicine
+  // currently being edited (currentEditingId) is excluded from that "used"
+  // check, so its own existing compartment stays selectable/selected.
+  // Called every time the form is opened (new medicine or existing one),
+  // so it always reflects the latest `medicines` array — which itself is
+  // refreshed after every add/edit/delete via refreshAll(). No page
+  // reload is involved anywhere in this flow.
+  function renderCompartmentDropdown(currentCompartment){
+    var select = document.getElementById('editCompartment');
+    var usedByOthers = medicines
+      .filter(function(m){ return String(m.id) !== String(currentEditingId); })
+      .map(function(m){ return m.compartment; });
+
+    var available = COMPARTMENTS.filter(function(c){
+      return usedByOthers.indexOf(c) === -1 || c === currentCompartment;
+    });
+
+    if(!available.length){
+      select.innerHTML = '<option value="">No compartments available</option>';
+      return;
+    }
+
+    select.innerHTML = available.map(function(c){
+      return '<option value="' + c + '">' + c + '</option>';
+    }).join('');
+
+    if(currentCompartment && available.indexOf(currentCompartment) !== -1){
+      select.value = currentCompartment;
+    }
+  }
+
   function populateManageForm(med){
     var formPanel = document.getElementById('medicineFormPanel');
     
@@ -1109,7 +1148,7 @@
 
     currentEditingId = med ? med.id : null;
     document.getElementById('editName').value = med ? med.name : '';
-    document.getElementById('editCompartment').value = med ? med.compartment : '';
+    renderCompartmentDropdown(med ? med.compartment : null);
     document.getElementById('editThreshold').value = med ? med.threshold : 5;
     document.getElementById('editPillsFull').value = med ? med.pillsFull : 30;
     document.getElementById('editPillsLeft').value = med ? med.pillsLeft : 30;
