@@ -71,6 +71,30 @@ async function startServer() {
       "apiKey" TEXT NOT NULL UNIQUE,
       "createdAt" TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     );
+
+    -- Physical hardware note: there is exactly ONE stepper+servo door that
+    -- rotates to whichever compartment needs it, so only one compartment
+    -- can ever be open at a time per account's pillbox. This is the lock.
+    CREATE TABLE IF NOT EXISTS door_status (
+      username TEXT PRIMARY KEY,
+      busy BOOLEAN NOT NULL DEFAULT false,
+      compartment TEXT,
+      reason TEXT,
+      "updatedAt" TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+
+    -- Queue of WEB-initiated (manual) open/close requests the ESP32 polls
+    -- for and physically executes. Scheduled/automatic dispensing does NOT
+    -- use this queue — the firmware already knows to act in that case, it
+    -- just claims/releases door_status directly (see auto-open/auto-close).
+    CREATE TABLE IF NOT EXISTS door_commands (
+      id SERIAL PRIMARY KEY,
+      username TEXT NOT NULL,
+      compartment TEXT NOT NULL,
+      action TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending',
+      "createdAt" TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
   `);
 
   // Safe migration for databases that might lack newer columns.
@@ -221,6 +245,14 @@ async function startServer() {
     }
   });
 
+  // Shared helper for the compartment-lock routes below AND for the
+  // auto-open-on-add logic here in /api/medicines. Returns a default
+  // "free" shape if this account has never touched the lock yet.
+  async function getDoorStatus(username) {
+    const result = await pool.query('SELECT * FROM door_status WHERE username = $1', [username]);
+    return result.rows[0] || { username, busy: false, compartment: null, reason: null };
+  }
+
   // POST: Add new medicine (with schedule timing and comments)
   app.post('/api/medicines', async (req, res) => {
     try {
@@ -242,12 +274,34 @@ async function startServer() {
         }
       }
 
+      // Auto-open the new medicine's compartment — unless the door is
+      // already busy for some other reason, in which case we don't queue
+      // anything; the frontend surfaces doorBusyMessage so the person
+      // knows to open it manually once the door is free.
+      let doorOpened = false;
+      let doorBusyMessage = null;
+      const status = await getDoorStatus(req.account.username);
+      if (!status.busy) {
+        await pool.query(
+          `INSERT INTO door_status (username, busy, compartment, reason, "updatedAt") VALUES ($1, true, $2, 'manual', CURRENT_TIMESTAMP)
+           ON CONFLICT (username) DO UPDATE SET busy = true, compartment = $2, reason = 'manual', "updatedAt" = CURRENT_TIMESTAMP`,
+          [req.account.username, compartment]
+        );
+        await pool.query(
+          `INSERT INTO door_commands (username, compartment, action) VALUES ($1, $2, 'open')`,
+          [req.account.username, compartment]
+        );
+        doorOpened = true;
+      } else {
+        doorBusyMessage = `Compartment ${status.compartment} is currently open/in use, so ${compartment} couldn't open automatically. Open it manually from this medicine's page once the other one is closed.`;
+      }
+
       await pool.query(
         `INSERT INTO activity_logs (username, item, action) VALUES ($1, $2, $3)`,
         [req.account.username, name, `Added to compartment ${compartment}`]
       );
 
-      res.status(201).json({ id: medId, message: 'Medicine created successfully' });
+      res.status(201).json({ id: medId, message: 'Medicine created successfully', doorOpened, doorBusyMessage });
     } catch (err) {
       res.status(500).json({ error: err.message });
     }
@@ -453,6 +507,156 @@ async function startServer() {
       );
 
       res.json({ message: 'Compartment restocked' });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // --- COMPARTMENT DOOR CONTROL ---
+  // One shared lock (door_status) covers BOTH manual (web-triggered) opens
+  // and automatic (scheduled dose) opens, because physically only one
+  // compartment can be open at a time. Whichever gets there first wins;
+  // the other is rejected outright with a clear error — never queued,
+  // never silently retried on this side.
+
+  app.get('/api/compartments/status', async (req, res) => {
+    try {
+      const status = await getDoorStatus(req.account.username);
+      res.json({ busy: !!status.busy, compartment: status.compartment, reason: status.reason });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Manual open — used both when a person clicks "Open Compartment" on
+  // the dashboard, and automatically right after a new medicine is saved.
+  // Queues a command for the ESP32 to pick up on its next poll; never
+  // closes on its own.
+  app.post('/api/compartments/:compartment/open', async (req, res) => {
+    try {
+      const compartment = req.params.compartment;
+      const status = await getDoorStatus(req.account.username);
+      if (status.busy) {
+        return res.status(409).json({ error: `Compartment ${status.compartment} is currently open or in use. Please wait until it closes before opening another compartment.` });
+      }
+
+      await pool.query(
+        `INSERT INTO door_status (username, busy, compartment, reason, "updatedAt") VALUES ($1, true, $2, 'manual', CURRENT_TIMESTAMP)
+         ON CONFLICT (username) DO UPDATE SET busy = true, compartment = $2, reason = 'manual', "updatedAt" = CURRENT_TIMESTAMP`,
+        [req.account.username, compartment]
+      );
+      await pool.query(
+        `INSERT INTO door_commands (username, compartment, action) VALUES ($1, $2, 'open')`,
+        [req.account.username, compartment]
+      );
+
+      res.json({ message: `Open command sent for compartment ${compartment}` });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Manual close — the ONLY way a manually (or auto-added) opened
+  // compartment ever closes. No timeout, no auto-close by design.
+  app.post('/api/compartments/:compartment/close', async (req, res) => {
+    try {
+      const compartment = req.params.compartment;
+      const status = await getDoorStatus(req.account.username);
+      if (!status.busy || status.compartment !== compartment) {
+        return res.status(409).json({ error: `Compartment ${compartment} is not currently open.` });
+      }
+
+      await pool.query(
+        `INSERT INTO door_commands (username, compartment, action) VALUES ($1, $2, 'close')`,
+        [req.account.username, compartment]
+      );
+
+      res.json({ message: `Close command sent for compartment ${compartment}` });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Polled by the ESP32 every few seconds to pick up manual open/close
+  // requests. Returns the oldest still-pending command, or null.
+  app.get('/api/compartments/pending-command', async (req, res) => {
+    try {
+      const result = await pool.query(
+        `SELECT id, compartment, action FROM door_commands WHERE username = $1 AND status = 'pending' ORDER BY id ASC LIMIT 1`,
+        [req.account.username]
+      );
+      res.json(result.rows[0] || null);
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ESP32 calls this after physically executing a pending command, so the
+  // server knows whether to keep the lock (open succeeded) or release it
+  // (close finished, or an open attempt failed).
+  app.post('/api/compartments/commands/:id/ack', async (req, res) => {
+    try {
+      const commandId = req.params.id;
+      const { success } = req.body || {};
+
+      const cmdResult = await pool.query(
+        `SELECT * FROM door_commands WHERE id = $1 AND username = $2`,
+        [commandId, req.account.username]
+      );
+      if (!cmdResult.rows.length) return res.status(404).json({ error: 'Command not found' });
+      const command = cmdResult.rows[0];
+
+      await pool.query(`UPDATE door_commands SET status = 'done' WHERE id = $1`, [commandId]);
+
+      if (command.action === 'close' || (command.action === 'open' && !success)) {
+        await pool.query(
+          `UPDATE door_status SET busy = false, compartment = NULL, reason = NULL, "updatedAt" = CURRENT_TIMESTAMP WHERE username = $1`,
+          [req.account.username]
+        );
+      }
+
+      res.json({ message: 'Acknowledged' });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Called by the ESP32 itself (not queued — it already knows to act)
+  // right before a SCHEDULED dispense cycle touches the motor/door. Same
+  // lock as manual opens, so a scheduled dose can never interrupt a
+  // compartment a person currently has open, and vice versa.
+  app.post('/api/compartments/:compartment/auto-open', async (req, res) => {
+    try {
+      const compartment = req.params.compartment;
+      const status = await getDoorStatus(req.account.username);
+      if (status.busy) {
+        return res.status(409).json({ error: `Compartment ${status.compartment} is currently in use.` });
+      }
+
+      await pool.query(
+        `INSERT INTO door_status (username, busy, compartment, reason, "updatedAt") VALUES ($1, true, $2, 'auto_dispense', CURRENT_TIMESTAMP)
+         ON CONFLICT (username) DO UPDATE SET busy = true, compartment = $2, reason = 'auto_dispense', "updatedAt" = CURRENT_TIMESTAMP`,
+        [req.account.username, compartment]
+      );
+
+      res.json({ message: 'Lock acquired' });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Called by the ESP32 once a scheduled dispense cycle's door is
+  // physically closed again (hand confirmed OR timed out — either way the
+  // door closes), releasing the lock.
+  app.post('/api/compartments/:compartment/auto-close', async (req, res) => {
+    try {
+      const compartment = req.params.compartment;
+      await pool.query(
+        `UPDATE door_status SET busy = false, compartment = NULL, reason = NULL, "updatedAt" = CURRENT_TIMESTAMP
+         WHERE username = $1 AND compartment = $2 AND reason = 'auto_dispense'`,
+        [req.account.username, compartment]
+      );
+      res.json({ message: 'Lock released' });
     } catch (err) {
       res.status(500).json({ error: err.message });
     }
