@@ -221,13 +221,13 @@
   .modal-overlay.active{display:flex;}
   .modal-box{
     background:var(--panel); border:1px solid var(--line); border-radius:var(--radius);
-    width:100%; max-width:480px; padding:24px; box-shadow:0 10px 25px rgba(0,0,0,0.08);
+    width:100%; max-width:560px; padding:24px; box-shadow:0 10px 25px rgba(0,0,0,0.08);
   }
   .modal-box h3{margin-bottom:16px; font-size:18px;}
 
   .schedule-editor{border:2px dashed var(--line); border-radius:12px; padding:14px; margin-top:4px;}
   .schedule-row-wrap{background:var(--panel-2); border:1px solid var(--line); border-radius:10px; padding:12px; margin-bottom:10px;}
-  .schedule-row{display:grid; grid-template-columns:1fr 1fr 1fr auto; gap:10px; align-items:center; margin-bottom:10px;}
+  .schedule-row{display:grid; grid-template-columns:120px 1fr 150px auto; gap:10px; align-items:center; margin-bottom:10px;}
   .btn-remove-time{ background:var(--pink-dim); color:#B5596B; border:none; border-radius:10px; width:38px; height:38px; font-size:15px; font-weight:700; }
   .btn-remove-time:hover{background:#F6C7D0;}
   .btn-add-time{ margin-top:4px; background:none; border:1.5px dashed var(--text-faint); color:var(--text-dim); border-radius:10px; padding:9px 14px; font-size:12.5px; font-weight:700; width:100%; }
@@ -374,7 +374,14 @@
 
     <section class="page" id="page-missed">
       <div class="panel">
-        <div class="panel-head"><h3>Missed Doses</h3><span style="font-size:12px; color:var(--text-faint); font-weight:700;">Last 30 days</span></div>
+        <div class="panel-head">
+          <h3>Missed Doses</h3>
+          <select id="missedRangeSelect" style="width:auto; padding:8px 12px; font-size:12.5px;">
+            <option value="day" selected>Today</option>
+            <option value="week">This Week (7 days)</option>
+            <option value="month">This Month (30 days)</option>
+          </select>
+        </div>
         <table>
           <thead>
             <tr>
@@ -853,16 +860,35 @@
     document.getElementById('overviewMovements').innerHTML = movesHtml || '<div class="empty-note">No recent activity.</div>';
   }
 
+  // The backend always returns the full trailing 30 days in one call
+  // (already fetched into missedHistory by refreshAll) — Day/Week/Month
+  // here is just a client-side slice of that same data by date, so
+  // switching the dropdown is instant and needs no extra network call.
+  function getMissedRangeCutoff(range){
+    var now = new Date();
+    var daysBack = range === 'week' ? 6 : (range === 'month' ? 29 : 0); // 'day' = today only
+    var cutoff = new Date(now.getFullYear(), now.getMonth(), now.getDate() - daysBack);
+    var y = cutoff.getFullYear();
+    var m = String(cutoff.getMonth() + 1).padStart(2, '0');
+    var d = String(cutoff.getDate()).padStart(2, '0');
+    return y + '-' + m + '-' + d; // matches the 'YYYY-MM-DD' format the server sends
+  }
+
   function renderMissed(){
     var body = document.getElementById('missedTableBody');
-    document.getElementById('navMissedCount').textContent = missedHistory.length;
+    var rangeSelect = document.getElementById('missedRangeSelect');
+    var range = rangeSelect ? rangeSelect.value : 'day';
+    var cutoff = getMissedRangeCutoff(range);
+    var filtered = missedHistory.filter(function(r){ return r.date >= cutoff; });
 
-    if(!missedHistory.length){
-      body.innerHTML = '<tr><td colspan="7" class="empty-note">No missed doses in the last 30 days.</td></tr>';
+    document.getElementById('navMissedCount').textContent = filtered.length;
+
+    if(!filtered.length){
+      body.innerHTML = '<tr><td colspan="7" class="empty-note">No missed doses in this range.</td></tr>';
       return;
     }
 
-    body.innerHTML = missedHistory.map(function(r){
+    body.innerHTML = filtered.map(function(r){
       return '<tr>' +
         '<td>' + r.date + '</td>' +
         '<td><b>' + r.medicineName + '</b></td>' +
@@ -1046,6 +1072,8 @@
     }).join('');
   }
 
+  document.getElementById('missedRangeSelect').addEventListener('change', renderMissed);
+
   document.getElementById('historyForm').addEventListener('submit', function(e){
     e.preventDefault();
     historyLogs.unshift({
@@ -1201,11 +1229,15 @@
     var closeBtn = document.getElementById('doorCloseBtn');
     var note = document.getElementById('doorStatusNote');
     if(openBtn && closeBtn && note){
-      openBtn.disabled = status.busy;
+      // Deliberately NOT using openBtn.disabled here — a disabled button
+      // never fires a click event, which means a click while busy would
+      // silently do nothing instead of hitting the server and showing the
+      // conflict alert. Keeping it clickable lets the existing 409 error
+      // handling in the click listener actually produce the popup.
       closeBtn.style.display = status.busy ? 'inline-block' : 'none';
       if(status.busy){
         var med = medicines.find(function(m){ return m.compartment === status.compartment; });
-        note.textContent = 'Compartment ' + status.compartment + (med ? ' (' + med.name + ')' : '') + ' is currently open.';
+        note.textContent = 'Compartment ' + status.compartment + (med ? ' (' + med.name + ')' : '') + ' is currently open. Close it before opening a different compartment.';
       } else {
         note.textContent = 'No compartment is currently open.';
       }
