@@ -227,6 +227,8 @@
 
   .schedule-editor{border:2px dashed var(--line); border-radius:12px; padding:14px; margin-top:4px;}
   .schedule-row-wrap{background:var(--panel-2); border:1px solid var(--line); border-radius:10px; padding:12px; margin-bottom:10px;}
+  .sched-comments{ width:100%; padding:12px 14px; background:var(--panel); border:2px solid var(--line); color:var(--text); border-radius:12px; font-size:14px; font-family:inherit; }
+  .sched-comments:focus{ outline:none; border-color:var(--lavender); }
   .schedule-row{display:grid; grid-template-columns:120px 1fr 150px auto; gap:10px; align-items:center; margin-bottom:10px;}
   .btn-remove-time{ background:var(--pink-dim); color:#B5596B; border:none; border-radius:10px; width:38px; height:38px; font-size:15px; font-weight:700; }
   .btn-remove-time:hover{background:#F6C7D0;}
@@ -378,8 +380,8 @@
           <h3>Missed Doses</h3>
           <select id="missedRangeSelect" style="width:auto; padding:8px 12px; font-size:12.5px;">
             <option value="day" selected>Today</option>
-            <option value="week">This Week (7 days)</option>
-            <option value="month">This Month (30 days)</option>
+            <option value="week">This Week</option>
+            <option value="month">This Month</option>
           </select>
         </div>
         <table>
@@ -860,17 +862,27 @@
     document.getElementById('overviewMovements').innerHTML = movesHtml || '<div class="empty-note">No recent activity.</div>';
   }
 
-  // The backend always returns the full trailing 30 days in one call
-  // (already fetched into missedHistory by refreshAll) — Day/Week/Month
-  // here is just a client-side slice of that same data by date, so
-  // switching the dropdown is instant and needs no extra network call.
+  // The backend fetches a 31-day trailing window in one call (already
+  // loaded into missedHistory by refreshAll) — that's just a big enough
+  // net to guarantee it always reaches back to the 1st of the CURRENT
+  // calendar month, no matter how long that month is or what day it is
+  // today. The actual "This Month" cutoff below is the real 1st of the
+  // month (via new Date(year, month, 1), which JS resolves correctly for
+  // any month length) — so Feb genuinely gets 28/29 days, April gets 30,
+  // etc. — never a flat 30/31 rolling window pretending to be a month.
   function getMissedRangeCutoff(range){
     var now = new Date();
-    var daysBack = range === 'week' ? 6 : (range === 'month' ? 29 : 0); // 'day' = today only
-    var cutoff = new Date(now.getFullYear(), now.getMonth(), now.getDate() - daysBack);
-    var y = cutoff.getFullYear();
-    var m = String(cutoff.getMonth() + 1).padStart(2, '0');
-    var d = String(cutoff.getDate()).padStart(2, '0');
+    var cutoffDate;
+    if(range === 'week'){
+      cutoffDate = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 6);
+    } else if(range === 'month'){
+      cutoffDate = new Date(now.getFullYear(), now.getMonth(), 1); // 1st of the actual current month
+    } else {
+      cutoffDate = new Date(now.getFullYear(), now.getMonth(), now.getDate()); // today only
+    }
+    var y = cutoffDate.getFullYear();
+    var m = String(cutoffDate.getMonth() + 1).padStart(2, '0');
+    var d = String(cutoffDate.getDate()).padStart(2, '0');
     return y + '-' + m + '-' + d; // matches the 'YYYY-MM-DD' format the server sends
   }
 
@@ -1108,7 +1120,7 @@
         '<button type="button" class="btn-remove-time">✕</button>' +
       '</div>' +
       '<div style="margin-bottom:10px;">' +
-        '<input type="text" class="sched-comments" placeholder="Additional comments (e.g. take with glass of water)" value="' + commentsVal + '">' +
+        '<input type="text" class="sched-comments" placeholder="Additional comments (optional)" value="' + commentsVal + '">' +
       '</div>' +
       '<div class="days-row">' +
         '<button type="button" class="day-chip daily-chip ' + (isDaily ? 'active' : '') + '">Daily</button>' +
