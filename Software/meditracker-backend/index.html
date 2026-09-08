@@ -503,6 +503,8 @@
             <div class="full btn-row">
               <button class="btn-primary" style="width:auto; padding:12px 24px;" id="saveEditBtn" type="button">Save Changes</button>
               <button class="btn-secondary" id="resetEditBtn" type="button">Cancel</button>
+              <button class="btn-secondary" id="openCompartmentBtn" type="button">Open Compartment</button>
+              <button class="btn-secondary" id="closeCompartmentBtn" type="button">Close Compartment</button>
               <button class="btn-danger" id="deleteMedBtn" type="button">Delete Medicine</button>
             </div>
           </div>
@@ -1135,6 +1137,106 @@
     }
   }
 
+  // Like authRequest — used for compartment open/close (not apiFetch) so
+  // a failure (e.g. door already busy) surfaces the server's real message
+  // in the error dialog, instead of apiFetch's generic silent-null path.
+  async function compartmentRequest(path, method){
+    const res = await fetch(API_BASE + path, {
+      method: method,
+      headers: { 'Content-Type': 'application/json', 'x-api-key': sessionApiKey }
+    });
+    const data = await res.json().catch(function(){ return null; });
+    if (!res.ok) {
+      throw new Error((data && data.error) ? data.error : 'Request failed (HTTP ' + res.status + ')');
+    }
+    return data;
+  }
+
+  // Keeps the Open/Close buttons in sync with the physical door's actual
+  // lock state (busy/free, and which compartment) without a page reload.
+  // Only meaningful while an existing (already-saved) medicine is loaded.
+  async function refreshDoorStatus(){
+    var openBtn = document.getElementById('openCompartmentBtn');
+    var closeBtn = document.getElementById('closeCompartmentBtn');
+    if(!openBtn || !closeBtn || !currentEditingId) return;
+
+    var med = medicines.find(function(m){ return String(m.id) === String(currentEditingId); });
+    if(!med) return;
+
+    var status = await apiFetch('/compartments/status');
+    if(!status) return;
+
+    var thisCompartmentOpen = status.busy && status.compartment === med.compartment;
+    openBtn.disabled = status.busy;
+    closeBtn.style.display = thisCompartmentOpen ? 'inline-block' : 'none';
+  }
+
+  window.openCompartment = async function(){
+    if(!currentEditingId) return;
+    var med = medicines.find(function(m){ return String(m.id) === String(currentEditingId); });
+    if(!med) return;
+    try {
+      await compartmentRequest('/compartments/' + med.compartment + '/open', 'POST');
+    } catch(err) {
+      // Door already open/busy for any reason (manual or a scheduled
+      // dose) — show the error and disregard the request, no retry.
+      alert(err.message);
+    }
+    await refreshDoorStatus();
+  };
+
+  window.closeCompartment = async function(){
+    if(!currentEditingId) return;
+    var med = medicines.find(function(m){ return String(m.id) === String(currentEditingId); });
+    if(!med) return;
+    try {
+      await compartmentRequest('/compartments/' + med.compartment + '/close', 'POST');
+    } catch(err) {
+      alert(err.message);
+    }
+    await refreshDoorStatus();
+  };
+
+  document.getElementById('openCompartmentBtn').addEventListener('click', window.openCompartment);
+  document.getElementById('closeCompartmentBtn').addEventListener('click', window.closeCompartment);
+
+  // Purely informational: if a compartment is being held open manually
+  // and one of its doses becomes due (or is already due) in the
+  // meantime, let the person know — it will NOT dispense on its own
+  // while the door is open (the ESP32's auto-open request gets rejected
+  // by the same lock), it just waits until the compartment is closed,
+  // same as it would for any other 30-minute dispense window. This
+  // doesn't change that behavior at all, it just surfaces it.
+  var dosageAlertShownFor = {};
+  var wasManualOpen = false;
+
+  async function checkDueDoseForOpenCompartment(){
+    var status = await apiFetch('/compartments/status');
+    if(!status) return;
+
+    var isManualOpen = status.busy && status.reason === 'manual';
+    if(!isManualOpen){
+      if(wasManualOpen) dosageAlertShownFor = {}; // compartment closed again — reset for next time
+      wasManualOpen = false;
+      return;
+    }
+    wasManualOpen = true;
+
+    var doseRes = await apiFetch('/doses/today');
+    if(!doseRes) return;
+
+    var dueDose = doseRes.find(function(d){
+      return d.compartment === status.compartment && !d.taken && (d.state === 'due' || d.state === 'missed');
+    });
+
+    if(dueDose && !dosageAlertShownFor[dueDose.scheduleId]){
+      dosageAlertShownFor[dueDose.scheduleId] = true;
+      alert(dueDose.medicineName + ' (' + dueDose.dosage + ') is due now in compartment ' + status.compartment + '. It will dispense automatically once you close this compartment.');
+    }
+  }
+
+  setInterval(checkDueDoseForOpenCompartment, 10000);
+
   function populateManageForm(med){
     var formPanel = document.getElementById('medicineFormPanel');
     
@@ -1159,12 +1261,15 @@
     scheduleList.forEach(function(s){ editor.appendChild(renderScheduleRow(s)); });
 
     document.getElementById('deleteMedBtn').style.display = med ? 'block' : 'none';
+    document.getElementById('openCompartmentBtn').style.display = med ? 'inline-block' : 'none';
+    document.getElementById('closeCompartmentBtn').style.display = 'none'; // shown by refreshDoorStatus only if actually open
+    if(med) refreshDoorStatus();
   }
 
   function renderEditDropdown(){
     var select = document.getElementById('editSelect');
     select.innerHTML = '<option value="">-- Select Medicine to Edit --</option>' +
-      medicines.map(function(m){ return '<option value="' + m.id + '">' + m.name + ' (Compartment ' + m.compartment + ')</option>'; }).join('');
+      medicines.map(function(m){ return '<option value="' + m.id + '">' + m.name + ' (' + m.compartment + ')</option>'; }).join('');
     select.value = currentEditingId || '';
   }
 
@@ -1226,7 +1331,13 @@
     if(currentEditingId){
       await apiFetch('/medicines/' + currentEditingId, { method: 'PUT', body: payload });
     } else {
-      await apiFetch('/medicines', { method: 'POST', body: payload });
+      var createResult = await apiFetch('/medicines', { method: 'POST', body: payload });
+      // New medicines auto-open their compartment on the hardware side;
+      // if the door happened to be busy at that exact moment, let the
+      // person know why it didn't open instead of failing silently.
+      if(createResult && createResult.doorOpened === false && createResult.doorBusyMessage){
+        alert(createResult.doorBusyMessage);
+      }
     }
 
     document.getElementById('medicineFormPanel').style.display = 'none';
@@ -1256,7 +1367,7 @@
     container.innerHTML = items.map(function(item){
       return '<div class="restock-card">' +
         '<div class="r-info">' +
-          '<div class="r-name">' + item.name + ' (Compartment ' + item.compartment + ')</div>' +
+          '<div class="r-name">' + item.name + ' (' + item.compartment + ')</div>' +
           '<div class="r-meta">Current: ' + item.pillsLeft + ' / Threshold: ' + item.threshold + '</div>' +
         '</div>' +
         '<input type="number" value="' + item.pillsFull + '" id="restockVal_' + item.id + '">' +
