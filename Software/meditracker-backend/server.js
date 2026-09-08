@@ -665,7 +665,7 @@ async function startServer() {
     }
   });
 
-  // GET: Missed doses over the trailing 30 days (not just today), most
+  // GET: Missed doses over the trailing 31 days (not just today), most
   // recent date first. A dose only counts as missed once its scheduled
   // time + grace window has actually passed for that specific date — a
   // dose still inside today's window is neither taken nor missed yet, so
@@ -678,7 +678,7 @@ async function startServer() {
         SELECT gs.day::date AS date, s.id AS "scheduleId", s.time, s.dosage, s.days,
                m.name AS "medicineName", m.compartment,
                COALESCE(dl.taken, 0) AS taken
-        FROM generate_series((CURRENT_DATE - INTERVAL '29 days')::date, CURRENT_DATE::date, INTERVAL '1 day') AS gs(day)
+        FROM generate_series((CURRENT_DATE - INTERVAL '30 days')::date, CURRENT_DATE::date, INTERVAL '1 day') AS gs(day)
         JOIN schedules s ON true
         JOIN medicines m ON s.medicine_id = m.id
         LEFT JOIN dose_logs dl ON dl.schedule_id = s.id AND dl.date = gs.day::text
