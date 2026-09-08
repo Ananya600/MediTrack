@@ -593,10 +593,6 @@ async function startServer() {
       res.status(500).json({ error: err.message });
     }
   });
-
-  // ESP32 calls this after physically executing a pending command, so the
-  // server knows whether to keep the lock (open succeeded) or release it
-  // (close finished, or an open attempt failed).
  // ESP32 calls this after physically executing a pending command, so the
   // server knows whether to keep the lock (open succeeded) or release it
   // (close finished, or an open attempt failed).
