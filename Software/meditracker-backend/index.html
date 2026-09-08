@@ -574,7 +574,7 @@
 <div class="modal-overlay" id="editScheduleModal">
   <div class="modal-box">
     <h3 id="modalMedTitle">Edit Schedule Entry</h3>
-    <div id="modalScheduleContainer"></div>
+    <div class="schedule-editor" id="modalScheduleContainer"></div>
     <div class="btn-row" style="margin-top: 16px;">
       <button type="button" class="btn-primary" id="saveScheduleModalBtn" style="width:auto; padding:10px 20px;">Save Schedule</button>
       <button type="button" class="btn-secondary" id="cancelScheduleModalBtn">Cancel</button>
@@ -978,7 +978,7 @@
     editingMedForSchedule = med;
     editingScheduleIdx = parsedIdx;
 
-    document.getElementById('modalMedTitle').textContent = 'Edit Schedule for ' + med.name;
+    document.getElementById('modalMedTitle').textContent = 'Edit Schedule';
     var container = document.getElementById('modalScheduleContainer');
     container.innerHTML = '';
     container.appendChild(renderScheduleRow(med.schedule[editingScheduleIdx]));
