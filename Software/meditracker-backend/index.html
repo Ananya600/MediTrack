@@ -332,7 +332,7 @@
       <div class="nav-label" style="margin-top:18px;">Medication</div>
       <button class="nav-item" data-page="track"><span class="ic">⏱</span> Daily Schedule <span class="count" id="navTrackCount">0</span></button>
       <button class="nav-item" data-page="edit"><span class="ic">✎</span> Manage Medicines</button>
-      <button class="nav-item" data-page="restock"><span class="ic">↻</span> Restock Refills <span class="count" id="navRestockCount">0</span></button>
+      <button class="nav-item" data-page="restock"><span class="ic">↻</span> Inventory <span class="count" id="navRestockCount">0</span></button>
 
       <div class="nav-label" style="margin-top:18px;">Hardware</div>
       <button class="nav-item" data-page="device"><span class="ic">🔑</span> Device Setup</button>
@@ -503,8 +503,6 @@
             <div class="full btn-row">
               <button class="btn-primary" style="width:auto; padding:12px 24px;" id="saveEditBtn" type="button">Save Changes</button>
               <button class="btn-secondary" id="resetEditBtn" type="button">Cancel</button>
-              <button class="btn-secondary" id="openCompartmentBtn" type="button">Open Compartment</button>
-              <button class="btn-secondary" id="closeCompartmentBtn" type="button">Close Compartment</button>
               <button class="btn-danger" id="deleteMedBtn" type="button">Delete Medicine</button>
             </div>
           </div>
@@ -513,9 +511,23 @@
     </section>
 
     <section class="page" id="page-restock">
+      <div class="panel" style="padding:24px; margin-bottom:20px;">
+        <div class="form-grid">
+          <div class="full">
+            <label for="doorMedicineSelect">Select medicine / compartment</label>
+            <select id="doorMedicineSelect"></select>
+          </div>
+        </div>
+        <div class="btn-row" style="margin-top:20px;">
+          <button class="btn-add" id="doorOpenBtn" type="button">Open Compartment</button>
+          <button class="btn-secondary" id="doorCloseBtn" type="button" style="display:none;">Close Compartment</button>
+        </div>
+        <div id="doorStatusNote" style="margin-top:14px; font-size:13px; color:var(--text-dim); font-weight:600;"></div>
+      </div>
+
       <div class="panel">
         <div class="panel-head">
-          <h3>Compartments Requiring Refill</h3>
+          <h3>Low Stock — Needs Refill</h3>
           <span style="font-size:12px; color:var(--text-faint); font-weight:700;" id="restockCountLabel">0 items</span>
         </div>
         <div id="restockList"></div>
@@ -779,7 +791,7 @@
     history: ['Compartment Log', 'Logs for refills and compartment operations.'],
     track: ['Daily Schedule', 'Real-time schedule for today.'],
     edit: ['Manage Medicines', 'Map medicines to specific pill box compartments.'],
-    restock: ['Restock Refills', 'Compartments requiring pill replenishment.'],
+    restock: ['Inventory', 'Compartment stock, refill status, and manual door control.'],
     device: ['Device Setup', 'API key and endpoints for your ESP32 pill box.']
   };
 
@@ -1152,67 +1164,50 @@
     return data;
   }
 
-  // Keeps the Open/Close buttons in sync with the physical door's actual
-  // lock state (busy/free, and which compartment) without a page reload.
-  // Only meaningful while an existing (already-saved) medicine is loaded.
-  async function refreshDoorStatus(){
-    var openBtn = document.getElementById('openCompartmentBtn');
-    var closeBtn = document.getElementById('closeCompartmentBtn');
-    if(!openBtn || !closeBtn || !currentEditingId) return;
-
-    var med = medicines.find(function(m){ return String(m.id) === String(currentEditingId); });
-    if(!med) return;
-
-    var status = await apiFetch('/compartments/status');
-    if(!status) return;
-
-    var thisCompartmentOpen = status.busy && status.compartment === med.compartment;
-    openBtn.disabled = status.busy;
-    closeBtn.style.display = thisCompartmentOpen ? 'inline-block' : 'none';
+  // Builds the "Medicine Name (Compartment)" dropdown on the Inventory
+  // page. Called from refreshAll() so it's always current, same as the
+  // other dropdowns.
+  function renderDoorMedicineSelect(){
+    var select = document.getElementById('doorMedicineSelect');
+    if(!select) return;
+    select.innerHTML = '<option value="">-- Select Medicine / Compartment --</option>' +
+      medicines.map(function(m){ return '<option value="' + m.compartment + '">' + m.name + ' (' + m.compartment + ')</option>'; }).join('');
   }
 
-  window.openCompartment = async function(){
-    if(!currentEditingId) return;
-    var med = medicines.find(function(m){ return String(m.id) === String(currentEditingId); });
-    if(!med) return;
-    try {
-      await compartmentRequest('/compartments/' + med.compartment + '/open', 'POST');
-    } catch(err) {
-      // Door already open/busy for any reason (manual or a scheduled
-      // dose) — show the error and disregard the request, no retry.
-      alert(err.message);
-    }
-    await refreshDoorStatus();
-  };
-
-  window.closeCompartment = async function(){
-    if(!currentEditingId) return;
-    var med = medicines.find(function(m){ return String(m.id) === String(currentEditingId); });
-    if(!med) return;
-    try {
-      await compartmentRequest('/compartments/' + med.compartment + '/close', 'POST');
-    } catch(err) {
-      alert(err.message);
-    }
-    await refreshDoorStatus();
-  };
-
-  document.getElementById('openCompartmentBtn').addEventListener('click', window.openCompartment);
-  document.getElementById('closeCompartmentBtn').addEventListener('click', window.closeCompartment);
-
-  // Purely informational: if a compartment is being held open manually
-  // and one of its doses becomes due (or is already due) in the
-  // meantime, let the person know — it will NOT dispense on its own
-  // while the door is open (the ESP32's auto-open request gets rejected
-  // by the same lock), it just waits until the compartment is closed,
-  // same as it would for any other 30-minute dispense window. This
-  // doesn't change that behavior at all, it just surfaces it.
+  // Single source of truth for the door lock, polled every 10s from
+  // anywhere in the app (not just the Inventory page). Does two
+  // independent things with that one status fetch:
+  //  1. Keeps the Inventory page's Open/Close buttons and note in sync
+  //     with reality — including a compartment that opened automatically
+  //     because a medicine was just added, not just ones opened from
+  //     this page.
+  //  2. Surfaces a purely informational popup if a dose becomes due while
+  //     its compartment is being held open manually — it will NOT
+  //     dispense on its own while the door is open (the ESP32's
+  //     auto-open request gets rejected by this same lock), it just waits
+  //     until the compartment is closed, same as any other dose inside
+  //     its normal 30-minute window. This doesn't change that behavior,
+  //     it just surfaces it.
   var dosageAlertShownFor = {};
   var wasManualOpen = false;
 
-  async function checkDueDoseForOpenCompartment(){
+  async function pollDoorState(){
     var status = await apiFetch('/compartments/status');
     if(!status) return;
+
+    var openBtn = document.getElementById('doorOpenBtn');
+    var closeBtn = document.getElementById('doorCloseBtn');
+    var note = document.getElementById('doorStatusNote');
+    if(openBtn && closeBtn && note){
+      openBtn.disabled = status.busy;
+      closeBtn.style.display = status.busy ? 'inline-block' : 'none';
+      if(status.busy){
+        var med = medicines.find(function(m){ return m.compartment === status.compartment; });
+        note.textContent = 'Compartment ' + status.compartment + (med ? ' (' + med.name + ')' : '') + ' is currently open.';
+      } else {
+        note.textContent = 'No compartment is currently open.';
+      }
+    }
 
     var isManualOpen = status.busy && status.reason === 'manual';
     if(!isManualOpen){
@@ -1231,11 +1226,35 @@
 
     if(dueDose && !dosageAlertShownFor[dueDose.scheduleId]){
       dosageAlertShownFor[dueDose.scheduleId] = true;
-      alert(dueDose.medicineName + ' (' + dueDose.dosage + ') is due now in compartment ' + status.compartment + '. It will dispense automatically once you close this compartment.');
+      alert(dueDose.medicineName + ' (' + dueDose.dosage + ') is due now in compartment ' + status.compartment + '. It will dispense automatically once this compartment is closed.');
     }
   }
 
-  setInterval(checkDueDoseForOpenCompartment, 10000);
+  setInterval(pollDoorState, 10000);
+
+  document.getElementById('doorOpenBtn').addEventListener('click', async function(){
+    var compartment = document.getElementById('doorMedicineSelect').value;
+    if(!compartment){ alert('Please select a medicine/compartment first.'); return; }
+    try {
+      await compartmentRequest('/compartments/' + compartment + '/open', 'POST');
+    } catch(err) {
+      // Door already open/busy for any reason (manual or a scheduled
+      // dose) — show the error and disregard the request, no retry.
+      alert(err.message);
+    }
+    await pollDoorState();
+  });
+
+  document.getElementById('doorCloseBtn').addEventListener('click', async function(){
+    var status = await apiFetch('/compartments/status');
+    if(!status || !status.busy){ alert('No compartment is currently open.'); return; }
+    try {
+      await compartmentRequest('/compartments/' + status.compartment + '/close', 'POST');
+    } catch(err) {
+      alert(err.message);
+    }
+    await pollDoorState();
+  });
 
   function populateManageForm(med){
     var formPanel = document.getElementById('medicineFormPanel');
@@ -1261,9 +1280,6 @@
     scheduleList.forEach(function(s){ editor.appendChild(renderScheduleRow(s)); });
 
     document.getElementById('deleteMedBtn').style.display = med ? 'block' : 'none';
-    document.getElementById('openCompartmentBtn').style.display = med ? 'inline-block' : 'none';
-    document.getElementById('closeCompartmentBtn').style.display = 'none'; // shown by refreshDoorStatus only if actually open
-    if(med) refreshDoorStatus();
   }
 
   function renderEditDropdown(){
@@ -1397,6 +1413,7 @@
     renderHistory();
     renderTrack();
     renderEditDropdown();
+    renderDoorMedicineSelect();
     renderRestock();
   }
 
