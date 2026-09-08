@@ -597,6 +597,9 @@ async function startServer() {
   // ESP32 calls this after physically executing a pending command, so the
   // server knows whether to keep the lock (open succeeded) or release it
   // (close finished, or an open attempt failed).
+ // ESP32 calls this after physically executing a pending command, so the
+  // server knows whether to keep the lock (open succeeded) or release it
+  // (close finished, or an open attempt failed).
   app.post('/api/compartments/commands/:id/ack', async (req, res) => {
     try {
       const commandId = req.params.id;
@@ -611,7 +614,11 @@ async function startServer() {
 
       await pool.query(`UPDATE door_commands SET status = 'done' WHERE id = $1`, [commandId]);
 
-      if (command.action === 'close' || (command.action === 'open' && !success)) {
+      // Release lock if the command was a 'close' action OR if an 'open' action failed
+      const isCloseAction = String(command.action).trim().toLowerCase() === 'close';
+      const isOpenFailed = String(command.action).trim().toLowerCase() === 'open' && success === false;
+
+      if (isCloseAction || isOpenFailed) {
         await pool.query(
           `UPDATE door_status SET busy = false, compartment = NULL, reason = NULL, "updatedAt" = CURRENT_TIMESTAMP WHERE username = $1`,
           [req.account.username]
@@ -623,7 +630,6 @@ async function startServer() {
       res.status(500).json({ error: err.message });
     }
   });
-
   // Called by the ESP32 itself (not queued — it already knows to act)
   // right before a SCHEDULED dispense cycle touches the motor/door. Same
   // lock as manual opens, so a scheduled dose can never interrupt a
