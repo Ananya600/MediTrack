@@ -374,10 +374,11 @@
 
     <section class="page" id="page-missed">
       <div class="panel">
-        <div class="panel-head"><h3>Missed Doses</h3></div>
+        <div class="panel-head"><h3>Missed Doses</h3><span style="font-size:12px; color:var(--text-faint); font-weight:700;">Last 30 days</span></div>
         <table>
           <thead>
             <tr>
+              <th>Date</th>
               <th>Medicine</th>
               <th>Dosage</th>
               <th>Scheduled Time</th>
@@ -598,6 +599,7 @@
   var medicines = [];
   var todaysDoses = [];
   var activity = [];
+  var missedHistory = [];
   var historyLogs = [];
 
   // Fixed set of physical pill box slots. The dropdown is filtered down
@@ -853,16 +855,16 @@
 
   function renderMissed(){
     var body = document.getElementById('missedTableBody');
-    var missed = todaysDoses.filter(function(d){ return d.state === 'missed'; });
-    document.getElementById('navMissedCount').textContent = missed.length;
+    document.getElementById('navMissedCount').textContent = missedHistory.length;
 
-    if(!missed.length){
-      body.innerHTML = '<tr><td colspan="6" class="empty-note">No missed doses.</td></tr>';
+    if(!missedHistory.length){
+      body.innerHTML = '<tr><td colspan="7" class="empty-note">No missed doses in the last 30 days.</td></tr>';
       return;
     }
 
-    body.innerHTML = missed.map(function(r){
+    body.innerHTML = missedHistory.map(function(r){
       return '<tr>' +
+        '<td>' + r.date + '</td>' +
         '<td><b>' + r.medicineName + '</b></td>' +
         '<td>' + r.dosage + '</td>' +
         '<td>' + r.time + '</td>' +
@@ -1221,12 +1223,12 @@
     if(!doseRes) return;
 
     var dueDose = doseRes.find(function(d){
-      return d.compartment === status.compartment && !d.taken && (d.state === 'due' || d.state === 'missed');
+      return d.compartment === status.compartment && !d.taken && d.state === 'due';
     });
 
     if(dueDose && !dosageAlertShownFor[dueDose.scheduleId]){
       dosageAlertShownFor[dueDose.scheduleId] = true;
-      alert(dueDose.medicineName + ' (' + dueDose.dosage + ') is due now in compartment ' + status.compartment + '. It will dispense automatically once this compartment is closed.');
+      alert(dueDose.medicineName + ' (' + dueDose.dosage + ') is due now in compartment ' + status.compartment + '. If you close this compartment before its dispense window ends, it will still be dispensed automatically as usual; otherwise it will be marked missed.');
     }
   }
 
@@ -1407,6 +1409,9 @@
 
     const actRes = await apiFetch('/doses/activity');
     if (actRes) activity = actRes;
+
+    const missedRes = await apiFetch('/doses/missed-history');
+    if (missedRes) missedHistory = missedRes;
 
     renderOverview();
     renderMissed();
