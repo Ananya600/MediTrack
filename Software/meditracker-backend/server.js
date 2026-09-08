@@ -537,7 +537,10 @@ async function startServer() {
       const compartment = req.params.compartment;
       const status = await getDoorStatus(req.account.username);
       if (status.busy) {
-        return res.status(409).json({ error: `Compartment ${status.compartment} is currently open or in use. Please wait until it closes before opening another compartment.` });
+        const message = status.reason === 'auto_dispense'
+          ? `A dose is currently being dispensed from compartment ${status.compartment}. Please wait for it to finish, then try again.`
+          : `Compartment ${status.compartment} is currently open. Please close it before opening another compartment.`;
+        return res.status(409).json({ error: message });
       }
 
       await pool.query(
@@ -657,6 +660,63 @@ async function startServer() {
         [req.account.username, compartment]
       );
       res.json({ message: 'Lock released' });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // GET: Missed doses over the trailing 30 days (not just today), most
+  // recent date first. A dose only counts as missed once its scheduled
+  // time + grace window has actually passed for that specific date — a
+  // dose still inside today's window is neither taken nor missed yet, so
+  // it's correctly excluded here (it'll show up if it later goes unmarked
+  // past its window).
+  app.get('/api/doses/missed-history', async (req, res) => {
+    try {
+      const result = await pool.query(
+        `
+        SELECT gs.day::date AS date, s.id AS "scheduleId", s.time, s.dosage, s.days,
+               m.name AS "medicineName", m.compartment,
+               COALESCE(dl.taken, 0) AS taken
+        FROM generate_series((CURRENT_DATE - INTERVAL '29 days')::date, CURRENT_DATE::date, INTERVAL '1 day') AS gs(day)
+        JOIN schedules s ON true
+        JOIN medicines m ON s.medicine_id = m.id
+        LEFT JOIN dose_logs dl ON dl.schedule_id = s.id AND dl.date = gs.day::text
+        WHERE m.username = $1
+        ORDER BY gs.day DESC, s.time ASC
+        `,
+        [req.account.username]
+      );
+
+      const now = new Date();
+      const todayStr = now.toISOString().split('T')[0];
+      const nowMinutes = now.getHours() * 60 + now.getMinutes();
+
+      const missed = result.rows
+        .filter(r => {
+          if (r.taken) return false;
+
+          let days = r.days;
+          try { days = JSON.parse(r.days); } catch (e) { /* leave as-is, e.g. 'daily' */ }
+          const dow = r.date.getUTCDay();
+          const appliesThatDay = (days === 'daily' || !days) || (Array.isArray(days) && days.includes(dow));
+          if (!appliesThatDay) return false;
+
+          const dateStr = r.date.toISOString().split('T')[0];
+          if (dateStr < todayStr) return true; // any past applicable day that was never taken is missed
+          if (dateStr === todayStr) return nowMinutes > timeToMinutes(r.time) + GRACE_MINUTES;
+          return false;
+        })
+        .map(r => ({
+          date: r.date.toISOString().split('T')[0],
+          scheduleId: r.scheduleId,
+          time: r.time,
+          dosage: r.dosage,
+          medicineName: r.medicineName,
+          compartment: r.compartment
+        }));
+
+      res.json(missed);
     } catch (err) {
       res.status(500).json({ error: err.message });
     }
