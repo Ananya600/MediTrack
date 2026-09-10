@@ -35,7 +35,6 @@ const int TTS_CHUNK_LIMIT = 180;
 Stepper myStepper(StepsPerRevolution, IN1, IN3, IN2, IN4);
 Servo myServo;
 Preferences preferences; 
-Audio audio;             
 
 char deviceApiKey[64] = ""; 
 const int degreeOfRotation[9] = {0, 0, 45, 90, 135, 180, -135, -90, -45};
@@ -43,11 +42,8 @@ const int degreeOfRotation[9] = {0, 0, 45, 90, 135, 180, -135, -90, -45};
 unsigned long lastPollTime = 0;
 const unsigned long POLL_INTERVAL = 15000; 
 
-// Separate, faster poll for manual open/close requests from the web
-// dashboard, so clicking "Open"/"Close" feels responsive rather than
-// waiting on the same 15s cadence as scheduled-dose checks.
 unsigned long lastManualPollTime = 0;
-const unsigned long MANUAL_POLL_INTERVAL = 5000;
+const unsigned long MANUAL_POLL_INTERVAL = 3000; // Reduced to 3s for fast UI response
 
 const unsigned long HAND_WAIT_REMINDER_INTERVAL = 20000; 
 const unsigned long HAND_WAIT_TIMEOUT           = 180000;
@@ -58,10 +54,6 @@ volatile bool g_handDetectedDuringCycle = false;
 std::set<String> dispensedIds;
 String lastResetDate = "";
 
-// Tracks a compartment that was opened via a MANUAL command (from the web
-// dashboard) and is being held open on purpose — i.e. it does NOT auto-
-// close, unlike a scheduled dispense cycle. Needed so a later "close"
-// command knows how far to rotate the stepper back home.
 bool manualDoorOpen = false;
 int manualOpenCompartmentNum = 0;
 int manualOpenSteps = 0;
@@ -197,7 +189,7 @@ void waitForAudioToFinish() {
   while (audio.isRunning()) {
     audio.loop();
     yield();
-    if (millis() - ttsStart > 8000) { // Reduced to 8-sec hard guard
+    if (millis() - ttsStart > 8000) { 
       Serial.println("TTS timeout — skipping audio to avoid hardware hang.");
       audio.stopSong();
       break;
@@ -228,7 +220,7 @@ bool fetchTTSToFile(String text, const char* path) {
 
   WiFiClientSecure client;
   client.setInsecure();
-  client.setTimeout(5); // Non-blocking fast timeout
+  client.setTimeout(5); 
 
   HTTPClient http;
   http.begin(client, url);
@@ -338,14 +330,14 @@ void resetDailyTrackingIfNewDay() {
 int parseCompartment(String label) {
   label.trim();
   label.toUpperCase();
-  if (label == "A1") return 1;
-  if (label == "A2") return 2;
-  if (label == "A3") return 3;
-  if (label == "A4") return 4;
-  if (label == "B1") return 5;
-  if (label == "B2") return 6;
-  if (label == "B3") return 7;
-  if (label == "B4") return 8;
+  if (label == "A1" || label == "A") return 1;
+  if (label == "A2" || label == "B") return 2;
+  if (label == "A3" || label == "C") return 3;
+  if (label == "A4" || label == "D") return 4;
+  if (label == "A5") return 5;
+  if (label == "A6") return 6;
+  if (label == "A7") return 7;
+  if (label == "A8") return 8;
 
   int num = label.toInt();
   if (num >= 1 && num <= 8) return num;
@@ -380,17 +372,12 @@ void logDoseToBackend(String scheduleId) {
   Serial.printf("Logged dose status to server (HTTP %d)\n", httpCode);
 }
 
-// ================= COMPARTMENT LOCK (shared between scheduled & manual) =================
-// The server tracks who currently "owns" the single physical door. These
-// three helpers are how the firmware talks to that lock:
-//  - requestAutoOpen: claim it before a SCHEDULED dispense touches the door.
-//  - requestAutoClose: release it once that scheduled dispense's door is
-//    physically closed again (whether a hand was confirmed or it timed out).
-//  - ackManualCommand: report back after executing a WEB-initiated (manual)
-//    open/close command, so the server knows to keep or release the lock.
+// ================= COMPARTMENT LOCK HELPERS =================
 
 bool requestAutoOpen(String compartmentLabel) {
   if (WiFi.status() != WL_CONNECTED || strlen(deviceApiKey) == 0) return false;
+  Serial.printf("[HEAP] before auto-open: %d free, %d max alloc\n",
+              ESP.getFreeHeap(), ESP.getMaxAllocHeap());
 
   WiFiClientSecure client;
   client.setInsecure();
@@ -404,29 +391,14 @@ bool requestAutoOpen(String compartmentLabel) {
   http.setTimeout(10000);
 
   int httpCode = http.POST("{}");
+  if (httpCode != 200) {
+    String body = http.getString();
+    Serial.printf("auto-open rejected (HTTP %d): %s\n", httpCode, body.c_str());
+  }
   http.end();
   client.stop();
 
   return httpCode == 200;
-}
-
-void requestAutoClose(String compartmentLabel) {
-  if (WiFi.status() != WL_CONNECTED || strlen(deviceApiKey) == 0) return;
-
-  WiFiClientSecure client;
-  client.setInsecure();
-  client.setTimeout(10);
-
-  HTTPClient http;
-  String url = String(SERVER_BASE_URL) + "/api/compartments/" + compartmentLabel + "/auto-close";
-  http.begin(client, url);
-  http.addHeader("x-api-key", deviceApiKey);
-  http.addHeader("Content-Type", "application/json");
-  http.setTimeout(10000);
-
-  http.POST("{}");
-  http.end();
-  client.stop();
 }
 
 void ackManualCommand(long commandId, bool success) {
@@ -449,10 +421,35 @@ void ackManualCommand(long commandId, bool success) {
   client.stop();
 }
 
-// Polls for a pending manual open/close request from the web dashboard and
-// physically executes it. Unlike executeDispenseCycle, this never waits
-// for a hand and never auto-closes — an opened compartment stays exactly
-// as commanded until an explicit "close" request arrives.
+bool requestAutoClose(String compartmentLabel) {
+  if (WiFi.status() != WL_CONNECTED || strlen(deviceApiKey) == 0) return false;
+
+  for (int attempt = 0; attempt < 3; attempt++) {
+    WiFiClientSecure client;
+    client.setInsecure();
+    client.setTimeout(10);
+
+    HTTPClient http;
+    String url = String(SERVER_BASE_URL) + "/api/compartments/" + compartmentLabel + "/auto-close";
+    http.begin(client, url);
+    http.addHeader("x-api-key", deviceApiKey);
+    http.addHeader("Content-Type", "application/json");
+    http.setTimeout(10000);
+
+    int httpCode = http.POST("{}");
+    http.end();
+    client.stop();
+
+    if (httpCode == 200) return true;
+
+    Serial.printf("auto-close failed (attempt %d, HTTP %d), retrying...\n", attempt + 1, httpCode);
+    delay(1000);
+  }
+  Serial.println("auto-close FAILED after retries — door_status may be stuck until server auto-expire.");
+  return false;
+}
+
+
 void checkManualCommands() {
   if (WiFi.status() != WL_CONNECTED || strlen(deviceApiKey) == 0) return;
 
@@ -479,7 +476,7 @@ void checkManualCommands() {
 
   DynamicJsonDocument doc(512);
   DeserializationError error = deserializeJson(doc, payload);
-  if (error || doc.isNull()) return; // no pending command right now
+  if (error || doc.isNull()) return; 
 
   long commandId = doc["id"] | -1;
   String action = doc["action"] | "";
@@ -488,11 +485,16 @@ void checkManualCommands() {
 
   int num = parseCompartment(compartmentLabel);
   if (num < 1 || num > 8) {
-    ackManualCommand(commandId, false);
+    ackManualCommand(commandId, false); // Fail gracefully on invalid input
     return;
   }
 
   if (action == "open") {
+    if (manualDoorOpen) {
+      ackManualCommand(commandId, false); // Guard against double open
+      return;
+    }
+
     int degree = degreeOfRotation[num];
     int steps = (degree * StepsPerRevolution) / 360;
 
@@ -522,17 +524,7 @@ void checkManualCommands() {
     manualOpenCompartmentNum = 0;
     manualOpenSteps = 0;
 
-    // Let the hardware settle before anything else (e.g. a scheduled dose
-    // that was waiting for this exact compartment) touches the stepper or
-    // servo again. Two things happen here:
-    //  1. A short blocking delay so the motor/servo aren't hit again the
-    //     instant this function returns.
-    //  2. lastPollTime is reset, which pushes the NEXT scheduled-dose
-    //     check out by a full POLL_INTERVAL (15s) rather than letting it
-    //     fire on the very next loop() tick if that timer already elapsed
-    //     while the door was manually open. The dispense window is 30
-    //     minutes wide, so this small delay changes nothing functionally.
-    delay(2000);
+    delay(1000);
     lastPollTime = millis();
 
     ackManualCommand(commandId, true);
@@ -550,20 +542,18 @@ void executeDispenseCycle(int compartmentNum, String scheduleId, String medName,
   Serial.println("[CYCLE START] Moving motor first...");
   myServo.write(0);
 
-  // MOVE STEPPER BEFORE SPEECH (Fixes blocking audio hang)
+  // 1. Move stepper to compartment position
   Serial.printf("Rotating stepper to compartment %d (%d steps)...\n", compartmentNum, steps);
   myStepper.step(steps);
   releaseMotor(); 
   delay(300);
 
-  // Speak announcement safely after movement
-  String currentTimeStr = formatMinutesToClock(getCurrentTimeInMinutes());
+  // 2. Audio announcement
   String announcement = medName + " is available at compartment " + compartmentLabel +
-                         ". Please take " + dosage + ".";
+                        ". Please take " + dosage + ".";
+  //speakText(announcement);
 
-  speakText(announcement);
-
-  // Open door
+  // 3. Open door
   Serial.println("Opening servo door...");
   myServo.write(180);
   delay(1000); 
@@ -600,42 +590,49 @@ void executeDispenseCycle(int compartmentNum, String scheduleId, String medName,
 
     if (millis() - lastReminder >= HAND_WAIT_REMINDER_INTERVAL) {
       lastReminder = millis();
-      speakText("Still waiting. Please reach into compartment " + compartmentLabel + ".");
+      //speakText("Still waiting. Please reach into compartment " + compartmentLabel + ".");
       g_handDetectedDuringCycle = false; 
     }
 
     delay(30);
   }
 
+  // 4. Close door physically
   if (handConfirmed) {
-    speakText("Got it. Closing compartment.");
+    //speakText("Got it. Closing compartment.");
     delay(1000); 
     myServo.write(0);
     delay(1000);
-    logDoseToBackend(scheduleId);
   } else {
     Serial.println("Timed out waiting for hand.");
     myServo.write(0);
     delay(1000);
-    speakText("No hand detected. Door closed.");
+    //speakText("No hand detected. Door closed.");
   }
 
-  // Return Home
+  // 5. Return stepper motor to HOME position
   Serial.println("Returning stepper to home position...");
   myStepper.step(-steps);
   releaseMotor(); 
   delay(500);
 
-  // Door is physically closed again — release the shared lock so a
-  // manual open (or the next scheduled dose) can proceed.
+  // 6. Report dose status to backend
+  if (handConfirmed) {
+    logDoseToBackend(scheduleId);
+  }
+
+  // 7. ALWAYS release the door lock on the server
   requestAutoClose(compartmentLabel);
+
+  // 8. Reset poll timer so next poll occurs after full interval
+  lastPollTime = millis();
 
   Serial.println("[CYCLE COMPLETE]");
 }
 
 void pollPendingDoses() {
   resetDailyTrackingIfNewDay();
-  if (WiFi.status() != WL_CONNECTED || strlen(deviceApiKey) == 0) return;
+  if (WiFi.status() != WL_CONNECTED || strlen(deviceApiKey) == 0 || manualDoorOpen) return;
 
   int currentMin = getCurrentTimeInMinutes();
   if (currentMin == -1) {
@@ -693,12 +690,8 @@ void pollPendingDoses() {
 
               Serial.printf("\n>>> Match found! Target compartment: %d (%s)\n", compartmentNum, compStr.c_str());
 
-              // Claim the door before touching hardware or marking this
-              // dose as dispensed. If a manual open currently has it, skip
-              // for now — this dose stays eligible and gets retried on the
-              // next poll (15s later) rather than forcing its way in.
               if (!requestAutoOpen(compStr)) {
-                Serial.println("Door is busy (manual open in progress) — will retry this dose next poll.");
+                Serial.println("Door is busy — will retry this dose next poll.");
                 http.end();
                 client.stop();
                 return;
