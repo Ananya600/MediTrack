@@ -35,6 +35,7 @@ const int TTS_CHUNK_LIMIT = 180;
 Stepper myStepper(StepsPerRevolution, IN1, IN3, IN2, IN4);
 Servo myServo;
 Preferences preferences; 
+Audio* audio = nullptr;  // was: Audio audio;        
 
 char deviceApiKey[64] = ""; 
 const int degreeOfRotation[9] = {0, 0, 45, 90, 135, 180, -135, -90, -45};
@@ -182,20 +183,20 @@ void setupWiFiAndPortal() {
 void waitForAudioToFinish() {
   unsigned long started = millis();
   while (millis() - started < 300) { 
-    audio.loop(); 
+    audio->loop(); 
     yield();
   }
   unsigned long ttsStart = millis();
-  while (audio.isRunning()) {
-    audio.loop();
+  while (audio->isRunning()) {
+    audio->loop();
     yield();
     if (millis() - ttsStart > 8000) { 
       Serial.println("TTS timeout — skipping audio to avoid hardware hang.");
-      audio.stopSong();
+      audio->stopSong();
       break;
     }
   }
-  audio.stopSong();
+  audio->stopSong();
 }
 
 bool fetchTTSToFile(String text, const char* path) {
@@ -274,11 +275,16 @@ void speakText(String text) {
     if (chunk.length() > 0) {
       const char* path = "/tts_chunk.mp3";
       if (fetchTTSToFile(chunk, path)) {
-        audio.connecttoFS(LittleFS, path); 
+        audio = new Audio();
+        audio->setPinout(I2S_BCLK, I2S_LRC, I2S_DOUT);
+        audio->setVolume(18);
+        audio->connecttoFS(LittleFS, path);
         waitForAudioToFinish();
-      } else {
-        Serial.println("TTS fetch failed, falling back to silent operation.");
-      }
+        delete audio;
+        audio = nullptr;
+        } else {
+          Serial.println("TTS fetch failed, falling back to silent operation.");
+          }
     }
     start = end;
   }
@@ -551,7 +557,9 @@ void executeDispenseCycle(int compartmentNum, String scheduleId, String medName,
   // 2. Audio announcement
   String announcement = medName + " is available at compartment " + compartmentLabel +
                         ". Please take " + dosage + ".";
-  //speakText(announcement);
+  Serial.printf("[HEAP] before speakText: %d free\n", ESP.getFreeHeap());
+  speakText(announcement);
+  Serial.printf("[HEAP] after speakText: %d free\n", ESP.getFreeHeap());
 
   // 3. Open door
   Serial.println("Opening servo door...");
@@ -590,7 +598,7 @@ void executeDispenseCycle(int compartmentNum, String scheduleId, String medName,
 
     if (millis() - lastReminder >= HAND_WAIT_REMINDER_INTERVAL) {
       lastReminder = millis();
-      //speakText("Still waiting. Please reach into compartment " + compartmentLabel + ".");
+      speakText("Still waiting. Please reach into compartment " + compartmentLabel + ".");
       g_handDetectedDuringCycle = false; 
     }
 
@@ -599,7 +607,7 @@ void executeDispenseCycle(int compartmentNum, String scheduleId, String medName,
 
   // 4. Close door physically
   if (handConfirmed) {
-    //speakText("Got it. Closing compartment.");
+    speakText("Got it. Closing compartment.");
     delay(1000); 
     myServo.write(0);
     delay(1000);
@@ -607,7 +615,7 @@ void executeDispenseCycle(int compartmentNum, String scheduleId, String medName,
     Serial.println("Timed out waiting for hand.");
     myServo.write(0);
     delay(1000);
-    //speakText("No hand detected. Door closed.");
+    speakText("No hand detected. Door closed.");
   }
 
   // 5. Return stepper motor to HOME position
@@ -746,9 +754,6 @@ void setup() {
 
   setupWiFiAndPortal();
   loadDispensedIdsFromNVS();
-
-  audio.setPinout(I2S_BCLK, I2S_LRC, I2S_DOUT);
-  audio.setVolume(18);
 
   ESP32PWM::allocateTimer(0);
   ESP32PWM::allocateTimer(1);
