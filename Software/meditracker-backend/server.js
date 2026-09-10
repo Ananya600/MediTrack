@@ -457,7 +457,7 @@ async function startServer() {
     }
   });
 
-  // POST: Mark dose taken
+  // POST: Mark dose taken (and auto-release compartment lock if auto-dispensing)
   app.post('/api/doses/:scheduleId/taken', async (req, res) => {
     try {
       const scheduleId = req.params.scheduleId;
@@ -465,14 +465,14 @@ async function startServer() {
 
       const result = await pool.query(
         `
-        SELECT s.medicine_id FROM schedules s
+        SELECT s.medicine_id, m.compartment FROM schedules s
         JOIN medicines m ON s.medicine_id = m.id
         WHERE s.id = $1 AND m.username = $2
         `,
         [scheduleId, req.account.username]
       );
       if (!result.rows.length) return res.status(404).json({ error: 'Schedule not found' });
-      const medId = result.rows[0].medicine_id;
+      const { medicine_id: medId, compartment } = result.rows[0];
 
       await pool.query(
         `INSERT INTO dose_logs (schedule_id, medicine_id, date, taken, "takenAt") VALUES ($1, $2, $3, 1, CURRENT_TIMESTAMP)`,
@@ -485,12 +485,17 @@ async function startServer() {
         [req.account.username, medId]
       );
 
-      res.json({ message: 'Dose marked as taken' });
+      // Force release the compartment lock upon dose completion
+      await pool.query(
+        `UPDATE door_status SET busy = false, compartment = NULL, reason = NULL, "updatedAt" = CURRENT_TIMESTAMP WHERE username = $1`,
+        [req.account.username]
+      );
+
+      res.json({ message: 'Dose marked as taken and door lock released' });
     } catch (err) {
       res.status(500).json({ error: err.message });
     }
   });
-
   // POST: Restock
   app.post('/api/restock/:id', async (req, res) => {
     try {
@@ -608,13 +613,14 @@ async function startServer() {
       if (!cmdResult.rows.length) return res.status(404).json({ error: 'Command not found' });
       const command = cmdResult.rows[0];
 
+      // Mark command done so pending-command stops serving it
       await pool.query(`UPDATE door_commands SET status = 'done' WHERE id = $1`, [commandId]);
 
-      // Release lock if the command was a 'close' action OR if an 'open' action failed
-      const isCloseAction = String(command.action).trim().toLowerCase() === 'close';
-      const isOpenFailed = String(command.action).trim().toLowerCase() === 'open' && success === false;
+      // Normalize action check
+      const action = String(command.action).trim().toLowerCase();
 
-      if (isCloseAction || isOpenFailed) {
+      // Release lock on close or failed open attempt
+      if (action === 'close' || (action === 'open' && success === false)) {
         await pool.query(
           `UPDATE door_status SET busy = false, compartment = NULL, reason = NULL, "updatedAt" = CURRENT_TIMESTAMP WHERE username = $1`,
           [req.account.username]
@@ -655,18 +661,16 @@ async function startServer() {
   // door closes), releasing the lock.
   app.post('/api/compartments/:compartment/auto-close', async (req, res) => {
     try {
-      const compartment = req.params.compartment;
       await pool.query(
         `UPDATE door_status SET busy = false, compartment = NULL, reason = NULL, "updatedAt" = CURRENT_TIMESTAMP
-         WHERE username = $1 AND compartment = $2 AND reason = 'auto_dispense'`,
-        [req.account.username, compartment]
+         WHERE username = $1`,
+        [req.account.username]
       );
       res.json({ message: 'Lock released' });
     } catch (err) {
       res.status(500).json({ error: err.message });
     }
   });
-
   // GET: Missed doses over the trailing 31 days (not just today), most
   // recent date first. A dose only counts as missed once its scheduled
   // time + grace window has actually passed for that specific date — a
