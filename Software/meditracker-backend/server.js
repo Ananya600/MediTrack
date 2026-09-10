@@ -84,9 +84,7 @@ async function startServer() {
     );
 
     -- Queue of WEB-initiated (manual) open/close requests the ESP32 polls
-    -- for and physically executes. Scheduled/automatic dispensing does NOT
-    -- use this queue — the firmware already knows to act in that case, it
-    -- just claims/releases door_status directly (see auto-open/auto-close).
+    -- for and physically executes.
     CREATE TABLE IF NOT EXISTS door_commands (
       id SERIAL PRIMARY KEY,
       username TEXT NOT NULL,
@@ -98,7 +96,6 @@ async function startServer() {
   `);
 
   // Safe migration for databases that might lack newer columns.
-  // Postgres supports IF NOT EXISTS directly, so no try/catch needed.
   await pool.query(`
     ALTER TABLE schedules ADD COLUMN IF NOT EXISTS timing TEXT DEFAULT 'After Food';
     ALTER TABLE schedules ADD COLUMN IF NOT EXISTS comments TEXT DEFAULT '';
@@ -106,25 +103,15 @@ async function startServer() {
     ALTER TABLE activity_logs ADD COLUMN IF NOT EXISTS username TEXT NOT NULL DEFAULT '';
   `);
 
-  // One-time backfill: medicines/activity created before accounts existed
-  // got stamped with username = '' by the migration above, which makes
-  // them invisible to every route now that everything is ownership-scoped.
-  // Assign that orphaned data to sivani. Safe to leave in permanently —
-  // once there's nothing left with username = '', these are no-ops.
+  // Backfill orphaned data to default user if present
   const sivaniCheck = await pool.query(`SELECT id FROM accounts WHERE username = $1`, ['sivani']);
   if (sivaniCheck.rows.length) {
     await pool.query(`UPDATE medicines SET username = 'sivani' WHERE username = ''`);
     await pool.query(`UPDATE activity_logs SET username = 'sivani' WHERE username = ''`);
   }
 
-  // --- ACCOUNTS: real login, backed by this same Postgres database — no
-  // separate auth service. Each account gets its own permanent apiKey at
-  // creation time, so it never changes on a redeploy the way the single
-  // shared device key could if its row ever got lost.
-  //
-  // These two routes are intentionally public (same reasoning /device-key
-  // used to have): you can't send a key you don't have yet. Everything
-  // else, including /api/device-key now, requires one.
+  // --- ACCOUNTS & AUTHENTICATION ---
+
   app.post('/api/auth/register', async (req, res) => {
     try {
       const { fullName, username, password } = req.body || {};
@@ -175,10 +162,6 @@ async function startServer() {
     }
   });
 
-  // Everything below this line requires a valid key. There's no separate
-  // shared device key any more — each account's own permanent apiKey IS
-  // its ESP32 key too, so a pillbox and its dashboard always resolve to
-  // the same account and only ever see that account's data.
   async function requireApiKey(req, res, next) {
     try {
       const key = req.header('x-api-key');
@@ -195,17 +178,12 @@ async function startServer() {
   }
   app.use('/api', requireApiKey);
 
-  // Echoes back whichever account the request's key belongs to — the
-  // dashboard uses this to show the same key on the Device Setup page
-  // that the ESP32 should be paired with.
   app.get('/api/device-key', (req, res) => {
     res.json({ apiKey: req.header('x-api-key'), deviceName: req.account.fullName + "'s Pillbox" });
   });
 
   // --- API ENDPOINTS ---
 
-  // GET: Fetch all medicines with schedules (including timing and comments)
-  // — scoped to the logged-in account, never another account's data.
   app.get('/api/medicines', async (req, res) => {
     try {
       const medResult = await pool.query('SELECT * FROM medicines WHERE username = $1', [req.account.username]);
@@ -245,15 +223,31 @@ async function startServer() {
     }
   });
 
-  // Shared helper for the compartment-lock routes below AND for the
-  // auto-open-on-add logic here in /api/medicines. Returns a default
-  // "free" shape if this account has never touched the lock yet.
+  // Helper function to check door status and automatically auto-expire stuck locks (> 3 mins)
   async function getDoorStatus(username) {
     const result = await pool.query('SELECT * FROM door_status WHERE username = $1', [username]);
-    return result.rows[0] || { username, busy: false, compartment: null, reason: null };
+    if (!result.rows.length) {
+      return { username, busy: false, compartment: null, reason: null };
+    }
+
+    const status = result.rows[0];
+
+    // Auto-expire lock if it has been busy for more than 180 seconds (3 mins) without an explicit release
+    if (status.busy && (new Date() - new Date(status.updatedAt) > 180000)) {
+      await pool.query(
+        `UPDATE door_status SET busy = false, compartment = NULL, reason = NULL, "updatedAt" = CURRENT_TIMESTAMP WHERE username = $1`,
+        [username]
+      );
+      await pool.query(
+        `UPDATE door_commands SET status = 'cancelled' WHERE username = $1 AND status = 'pending'`,
+        [username]
+      );
+      return { username, busy: false, compartment: null, reason: null };
+    }
+
+    return status;
   }
 
-  // POST: Add new medicine (with schedule timing and comments)
   app.post('/api/medicines', async (req, res) => {
     try {
       const { name, compartment, threshold, pillsFull, pillsLeft, schedule } = req.body;
@@ -274,10 +268,6 @@ async function startServer() {
         }
       }
 
-      // Auto-open the new medicine's compartment — unless the door is
-      // already busy for some other reason, in which case we don't queue
-      // anything; the frontend surfaces doorBusyMessage so the person
-      // knows to open it manually once the door is free.
       let doorOpened = false;
       let doorBusyMessage = null;
       const status = await getDoorStatus(req.account.username);
@@ -307,7 +297,6 @@ async function startServer() {
     }
   });
 
-  // PUT: Update medicine and cleanly sync schedules (with timing and comments)
   app.put('/api/medicines/:id', async (req, res) => {
     try {
       const medId = req.params.id;
@@ -321,12 +310,6 @@ async function startServer() {
         [name, compartment, threshold, pillsFull, pillsLeft, medId, req.account.username]
       );
 
-      // Reconcile schedules instead of wiping and recreating them: a row
-      // whose submitted id matches an existing row for this medicine is
-      // updated in place, so today's dose_logs (taken/missed status) stay
-      // attached to it. Rows with no id, or an id that doesn't match, are
-      // inserted fresh. Any existing row not present in the submitted list
-      // is removed.
       const existingRes = await pool.query(`SELECT id FROM schedules WHERE medicine_id = $1`, [medId]);
       const existingIds = existingRes.rows.map(r => r.id);
 
@@ -367,8 +350,6 @@ async function startServer() {
     }
   });
 
-  // DELETE: Delete a specific schedule item — only if the parent medicine
-  // belongs to this account.
   app.delete('/api/medicines/:id/schedule/:scheduleId', async (req, res) => {
     try {
       const { id, scheduleId } = req.params;
@@ -382,7 +363,6 @@ async function startServer() {
     }
   });
 
-  // DELETE: Delete medicine entirely — only this account's own
   app.delete('/api/medicines/:id', async (req, res) => {
     try {
       const medId = req.params.id;
@@ -403,9 +383,6 @@ async function startServer() {
     }
   });
 
-  // GET: Fetch today's doses (includes timing and comments context)
-  // Filters to schedules actually due today (daily, or matching day-of-week),
-  // and gives a "due" grace window before flipping a dose to "missed".
   const GRACE_MINUTES = 30;
   function timeToMinutes(t) {
     const [h, m] = String(t || '00:00').split(':').map(Number);
@@ -417,7 +394,7 @@ async function startServer() {
       const now = new Date();
       const todayStr = now.toISOString().split('T')[0];
       const nowMinutes = now.getHours() * 60 + now.getMinutes();
-      const todayDow = now.getDay(); // 0=Sun..6=Sat, matches the frontend's day chips
+      const todayDow = now.getDay();
 
       const result = await pool.query(
         `
@@ -435,7 +412,7 @@ async function startServer() {
       const resultRows = result.rows
         .filter(r => {
           let days = r.days;
-          try { days = JSON.parse(r.days); } catch (e) { /* leave as-is, e.g. 'daily' */ }
+          try { days = JSON.parse(r.days); } catch (e) {}
           if (days === 'daily' || !days) return true;
           return Array.isArray(days) && days.includes(todayDow);
         })
@@ -457,7 +434,6 @@ async function startServer() {
     }
   });
 
-  // POST: Mark dose taken (and auto-release compartment lock if auto-dispensing)
   app.post('/api/doses/:scheduleId/taken', async (req, res) => {
     try {
       const scheduleId = req.params.scheduleId;
@@ -472,7 +448,7 @@ async function startServer() {
         [scheduleId, req.account.username]
       );
       if (!result.rows.length) return res.status(404).json({ error: 'Schedule not found' });
-      const { medicine_id: medId, compartment } = result.rows[0];
+      const { medicine_id: medId } = result.rows[0];
 
       await pool.query(
         `INSERT INTO dose_logs (schedule_id, medicine_id, date, taken, "takenAt") VALUES ($1, $2, $3, 1, CURRENT_TIMESTAMP)`,
@@ -485,9 +461,13 @@ async function startServer() {
         [req.account.username, medId]
       );
 
-      // Force release the compartment lock upon dose completion
+      // Force release door lock and clear pending commands
       await pool.query(
         `UPDATE door_status SET busy = false, compartment = NULL, reason = NULL, "updatedAt" = CURRENT_TIMESTAMP WHERE username = $1`,
+        [req.account.username]
+      );
+      await pool.query(
+        `UPDATE door_commands SET status = 'cancelled' WHERE username = $1 AND status = 'pending'`,
         [req.account.username]
       );
 
@@ -496,7 +476,7 @@ async function startServer() {
       res.status(500).json({ error: err.message });
     }
   });
-  // POST: Restock
+
   app.post('/api/restock/:id', async (req, res) => {
     try {
       const medId = req.params.id;
@@ -518,11 +498,6 @@ async function startServer() {
   });
 
   // --- COMPARTMENT DOOR CONTROL ---
-  // One shared lock (door_status) covers BOTH manual (web-triggered) opens
-  // and automatic (scheduled dose) opens, because physically only one
-  // compartment can be open at a time. Whichever gets there first wins;
-  // the other is rejected outright with a clear error — never queued,
-  // never silently retried on this side.
 
   app.get('/api/compartments/status', async (req, res) => {
     try {
@@ -533,10 +508,6 @@ async function startServer() {
     }
   });
 
-  // Manual open — used both when a person clicks "Open Compartment" on
-  // the dashboard, and automatically right after a new medicine is saved.
-  // Queues a command for the ESP32 to pick up on its next poll; never
-  // closes on its own.
   app.post('/api/compartments/:compartment/open', async (req, res) => {
     try {
       const compartment = req.params.compartment;
@@ -564,8 +535,6 @@ async function startServer() {
     }
   });
 
-  // Manual close — the ONLY way a manually (or auto-added) opened
-  // compartment ever closes. No timeout, no auto-close by design.
   app.post('/api/compartments/:compartment/close', async (req, res) => {
     try {
       const compartment = req.params.compartment;
@@ -585,8 +554,6 @@ async function startServer() {
     }
   });
 
-  // Polled by the ESP32 every few seconds to pick up manual open/close
-  // requests. Returns the oldest still-pending command, or null.
   app.get('/api/compartments/pending-command', async (req, res) => {
     try {
       const result = await pool.query(
@@ -598,9 +565,7 @@ async function startServer() {
       res.status(500).json({ error: err.message });
     }
   });
- // ESP32 calls this after physically executing a pending command, so the
-  // server knows whether to keep the lock (open succeeded) or release it
-  // (close finished, or an open attempt failed).
+
   app.post('/api/compartments/commands/:id/ack', async (req, res) => {
     try {
       const commandId = req.params.id;
@@ -613,16 +578,17 @@ async function startServer() {
       if (!cmdResult.rows.length) return res.status(404).json({ error: 'Command not found' });
       const command = cmdResult.rows[0];
 
-      // Mark command done so pending-command stops serving it
       await pool.query(`UPDATE door_commands SET status = 'done' WHERE id = $1`, [commandId]);
 
-      // Normalize action check
       const action = String(command.action).trim().toLowerCase();
 
-      // Release lock on close or failed open attempt
       if (action === 'close' || (action === 'open' && success === false)) {
         await pool.query(
           `UPDATE door_status SET busy = false, compartment = NULL, reason = NULL, "updatedAt" = CURRENT_TIMESTAMP WHERE username = $1`,
+          [req.account.username]
+        );
+        await pool.query(
+          `UPDATE door_commands SET status = 'cancelled' WHERE username = $1 AND status = 'pending'`,
           [req.account.username]
         );
       }
@@ -632,10 +598,7 @@ async function startServer() {
       res.status(500).json({ error: err.message });
     }
   });
-  // Called by the ESP32 itself (not queued — it already knows to act)
-  // right before a SCHEDULED dispense cycle touches the motor/door. Same
-  // lock as manual opens, so a scheduled dose can never interrupt a
-  // compartment a person currently has open, and vice versa.
+
   app.post('/api/compartments/:compartment/auto-open', async (req, res) => {
     try {
       const compartment = req.params.compartment;
@@ -656,9 +619,6 @@ async function startServer() {
     }
   });
 
-  // Called by the ESP32 once a scheduled dispense cycle's door is
-  // physically closed again (hand confirmed OR timed out — either way the
-  // door closes), releasing the lock.
   app.post('/api/compartments/:compartment/auto-close', async (req, res) => {
     try {
       await pool.query(
@@ -666,17 +626,17 @@ async function startServer() {
          WHERE username = $1`,
         [req.account.username]
       );
+      await pool.query(
+        `UPDATE door_commands SET status = 'cancelled' WHERE username = $1 AND status = 'pending'`,
+        [req.account.username]
+      );
+
       res.json({ message: 'Lock released' });
     } catch (err) {
       res.status(500).json({ error: err.message });
     }
   });
-  // GET: Missed doses over the trailing 31 days (not just today), most
-  // recent date first. A dose only counts as missed once its scheduled
-  // time + grace window has actually passed for that specific date — a
-  // dose still inside today's window is neither taken nor missed yet, so
-  // it's correctly excluded here (it'll show up if it later goes unmarked
-  // past its window).
+
   app.get('/api/doses/missed-history', async (req, res) => {
     try {
       const result = await pool.query(
@@ -703,13 +663,13 @@ async function startServer() {
           if (r.taken) return false;
 
           let days = r.days;
-          try { days = JSON.parse(r.days); } catch (e) { /* leave as-is, e.g. 'daily' */ }
+          try { days = JSON.parse(r.days); } catch (e) {}
           const dow = r.date.getUTCDay();
           const appliesThatDay = (days === 'daily' || !days) || (Array.isArray(days) && days.includes(dow));
           if (!appliesThatDay) return false;
 
           const dateStr = r.date.toISOString().split('T')[0];
-          if (dateStr < todayStr) return true; // any past applicable day that was never taken is missed
+          if (dateStr < todayStr) return true;
           if (dateStr === todayStr) return nowMinutes > timeToMinutes(r.time) + GRACE_MINUTES;
           return false;
         })
@@ -728,7 +688,6 @@ async function startServer() {
     }
   });
 
-  // GET: Fetch activity logs
   app.get('/api/doses/activity', async (req, res) => {
     try {
       const result = await pool.query(
