@@ -605,7 +605,7 @@ async function startServer() {
       const status = await getDoorStatus(req.account.username);
       if (status.busy) {
         return res.status(409).json({ 
-          error: `Compartment ${status.compartment} is currently in use.`
+          error: `Compartment ${status.compartment} is currently in use.`,
           compartment: status.compartment,
           reason: status.reason,
           lockedAt: status.updatedAt
