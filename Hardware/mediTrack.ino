@@ -3,13 +3,14 @@
 #include <WiFiClientSecure.h>
 #include <ArduinoJson.h>
 #include <Stepper.h>
-#include <ESP32Servo.h>
+//#include <ESP32Servo.h>
 #include <WiFiManager.h>
 #include <Preferences.h>
 #include <time.h>
 #include <Audio.h>
 #include <LittleFS.h>
 #include <set>
+#include <driver/ledc.h>
 
 // ================= CONFIGURATION & CONSTANTS =================
 const char* SERVER_BASE_URL = "https://meditrack-6m2m.onrender.com"; 
@@ -33,9 +34,14 @@ const int TTS_CHUNK_LIMIT = 180;
 
 // ================= GLOBALS & STORAGE =================
 Stepper myStepper(StepsPerRevolution, IN1, IN3, IN2, IN4);
-Servo myServo;
+//Servo myServo;
 Preferences preferences; 
-Audio* audio = nullptr;  // was: Audio audio;        
+Audio* audio = nullptr;  // was: Audio audio;    
+#define SERVO_LEDC_CHANNEL   LEDC_CHANNEL_0
+#define SERVO_LEDC_TIMER     LEDC_TIMER_3
+#define SERVO_LEDC_MODE      LEDC_LOW_SPEED_MODE
+#define SERVO_FREQ_HZ        50
+#define SERVO_RESOLUTION     LEDC_TIMER_13_BIT    
 
 char deviceApiKey[64] = ""; 
 const int degreeOfRotation[9] = {0, 0, 45, 90, 135, 180, -135, -90, -45};
@@ -65,6 +71,38 @@ void IRAM_ATTR irSensorISR() {
 
 void saveConfigCallback() {
   shouldSaveConfig = true;
+}
+
+// Convert angle (0-180) to 13-bit PWM pulse duty cycle
+uint32_t angleToDuty(int angle) {
+  // 50Hz = 20ms period. 
+  // ~0.5ms pulse (0 deg)  -> ~205 duty out of 8192
+  // ~2.5ms pulse (180 deg) -> ~1024 duty out of 8192
+  uint32_t minDuty = 205; 
+  uint32_t maxDuty = 1024;
+  return minDuty + ((maxDuty - minDuty) * angle) / 180;
+}
+
+void initServoLEDC() {
+  ledc_timer_config_t timer_conf = {
+    .speed_mode      = SERVO_LEDC_MODE,
+    .duty_resolution = SERVO_RESOLUTION,
+    .timer_num       = SERVO_LEDC_TIMER,
+    .freq_hz         = SERVO_FREQ_HZ,
+    .clk_cfg         = LEDC_AUTO_CLK
+  };
+  ledc_timer_config(&timer_conf);
+
+  ledc_channel_config_t ledc_conf = {
+    .gpio_num       = SERVO_PIN,
+    .speed_mode     = SERVO_LEDC_MODE,
+    .channel        = SERVO_LEDC_CHANNEL,
+    .intr_type      = LEDC_INTR_DISABLE,
+    .timer_sel      = SERVO_LEDC_TIMER,
+    .duty           = angleToDuty(0),
+    .hpoint         = 0
+  };
+  ledc_channel_config(&ledc_conf);
 }
 
 // ================= NVS PERSISTENCE =================
@@ -508,7 +546,7 @@ void checkManualCommands() {
     myStepper.step(steps);
     releaseMotor();
     delay(300);
-    myServo.write(180);
+    openDoor();
 
     manualDoorOpen = true;
     manualOpenCompartmentNum = num;
@@ -518,7 +556,7 @@ void checkManualCommands() {
 
   } else if (action == "close") {
     Serial.println("[MANUAL CLOSE] Closing door and returning home...");
-    myServo.write(0);
+    closeDoor();
     delay(1000);
 
     if (manualDoorOpen && manualOpenSteps != 0) {
@@ -539,6 +577,24 @@ void checkManualCommands() {
   }
 }
 
+void openDoor() {
+  initServoLEDC();
+  ledc_set_duty(SERVO_LEDC_MODE, SERVO_LEDC_CHANNEL, angleToDuty(180));
+  ledc_update_duty(SERVO_LEDC_MODE, SERVO_LEDC_CHANNEL);
+  delay(1000);
+  // Turn off PWM signal output to avoid jitter/conflicts
+  ledc_stop(SERVO_LEDC_MODE, SERVO_LEDC_CHANNEL, 0); 
+}
+
+void closeDoor() {
+  initServoLEDC();
+  ledc_set_duty(SERVO_LEDC_MODE, SERVO_LEDC_CHANNEL, angleToDuty(0));
+  ledc_update_duty(SERVO_LEDC_MODE, SERVO_LEDC_CHANNEL);
+  delay(1000);
+  // Turn off PWM signal output to avoid jitter/conflicts
+  ledc_stop(SERVO_LEDC_MODE, SERVO_LEDC_CHANNEL, 0); 
+}
+
 void executeDispenseCycle(int compartmentNum, String scheduleId, String medName, String dosage,
                           String compartmentLabel, int scheduledMin, String nextDoseAnnouncement) {
   
@@ -546,7 +602,7 @@ void executeDispenseCycle(int compartmentNum, String scheduleId, String medName,
   int steps = (degree * StepsPerRevolution) / 360;
 
   Serial.println("[CYCLE START] Moving motor first...");
-  myServo.write(0);
+  closeDoor();
 
   // 1. Move stepper to compartment position
   Serial.printf("Rotating stepper to compartment %d (%d steps)...\n", compartmentNum, steps);
@@ -563,7 +619,7 @@ void executeDispenseCycle(int compartmentNum, String scheduleId, String medName,
 
   // 3. Open door
   Serial.println("Opening servo door...");
-  myServo.write(180);
+  openDoor();
   delay(1000); 
 
   g_handDetectedDuringCycle = false; 
@@ -609,11 +665,11 @@ void executeDispenseCycle(int compartmentNum, String scheduleId, String medName,
   if (handConfirmed) {
     speakText("Got it. Closing compartment.");
     delay(1000); 
-    myServo.write(0);
+    closeDoor();
     delay(1000);
   } else {
     Serial.println("Timed out waiting for hand.");
-    myServo.write(0);
+    closeDoor();
     delay(1000);
     speakText("No hand detected. Door closed.");
   }
@@ -755,14 +811,9 @@ void setup() {
   setupWiFiAndPortal();
   loadDispensedIdsFromNVS();
 
-  ESP32PWM::allocateTimer(0);
-  ESP32PWM::allocateTimer(1);
-  ESP32PWM::allocateTimer(2);
-  ESP32PWM::allocateTimer(3);
-  
-  myServo.setPeriodHertz(50);             
-  myServo.attach(SERVO_PIN, 1000, 2000);   
-  myServo.write(0);
+  // Initialize native LEDC PWM driver on Timer 3
+  initServoLEDC();
+  closeDoor();
 
   if (!LittleFS.begin(true)) {
     Serial.println("LittleFS Mount Failed.");
