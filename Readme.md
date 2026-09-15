@@ -19,7 +19,6 @@
 - [Overview](#overview)
 - [Features](#features)
 - [Tech Stack](#tech-stack)
-- [Repository Structure](#repository-structure)
 - [Getting Started](#getting-started)
   - [Software (Dashboard + API)](#software-dashboard--api)
   - [Hardware (Pillbox)](#hardware-pillbox)
