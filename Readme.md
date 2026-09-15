@@ -23,7 +23,6 @@
   - [Software (Dashboard + API)](#software-dashboard--api)
   - [Hardware (Pillbox)](#hardware-pillbox)
 - [API Reference](#api-reference)
-- [Screenshots & Demo](#screenshots--demo)
 - [Roadmap](#roadmap)
 - [Team](#team)
 - [License](#license)
@@ -168,13 +167,6 @@ updated — so nothing added through the dashboard is lost between deploys.
 | `POST` | `/api/doses/:scheduleId/taken` | Mark a dose as dispensed |
 | `GET` | `/api/doses/activity` | Recent activity log |
 | `POST` | `/api/restock/:id` | Update a compartment's pill count after a refill |
-
-## Screenshots & Demo
-
-- Prototype compartment wheel + servo + breadboard wiring (bench test)
-- WiFiManager captive portal (`MediTrack-Setup`) for network provisioning
-
-- Dashboard codebase running in the dev environment
 
 ## Roadmap
 
